@@ -982,6 +982,24 @@ section.card {
     text-align: center;
 }
 
+.captcha-box {
+    display: grid;
+    gap: 14px;
+    justify-items: center;
+    width: 100%;
+}
+
+.captcha-notice {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--warn-soft);
+    border: 1px solid #f2e5c9;
+    color: var(--warn);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 /* payment */
 .pay-wrap {
     max-width: 860px;

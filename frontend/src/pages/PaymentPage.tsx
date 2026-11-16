@@ -4,6 +4,7 @@ import { cardsApi, CARD_DIGITS, type PaymentCard } from '../api/cards'
 import { ApiError, sleep } from '../api/client'
 import { paymentIdentifierFor } from '../api/paymentId'
 import { ticketing } from '../api/ticketing'
+import { queueApi } from '../api/queue'
 import type { Booking, Concert, Seat, SeatHold } from '../api/types'
 import { useAuth } from '../auth/AuthContext'
 import CardNumberField, { CardHelp } from '../components/CardNumberField'
@@ -146,6 +147,8 @@ export default function PaymentPage() {
         seatIds: b.seatIds,
         paymentMethod: m.kind === 'saved' ? 'SAVED_CARD' : 'DIRECT_INPUT', // 카드번호 자체는 기록하지 않는다
       })
+      // 예매가 끝났으니 대기열 입장 기록을 지운다. 다음 예매 시도에서 보안 확인(캡차)이 다시 나온다.
+      queueApi.leave(id).catch(() => { })
       setPaidWith(m.kind === 'saved' ? `${m.card.nickname} ···· ${m.card.last4}` : `직접 입력 카드 ···· ${m.last4}`)
       setDigits('')
       setBooking(b)

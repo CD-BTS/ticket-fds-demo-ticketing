@@ -90,7 +90,7 @@ const real: QueueApi = {
   leave: concertId => request('DELETE', `/concerts/${concertId}/queue/me`),
 }
 
-export interface CaptchaChallenge { challengeId: string; question: string; expiresAt: string }
+export interface CaptchaChallenge { challengeId: string; question: string; expiresAt: string; provider?: string; siteKey?: string | null }
 export const captchaChallenge = (concert: string, attempt: string | undefined) => request<CaptchaChallenge>('POST', `/concerts/${concert}/queue/captcha-challenges`, undefined, headers(attempt))
 export const captchaVerify = (concert: string, attempt: string | undefined, challengeId: string, answer: string, transition: string) => request<{ captchaToken: string; expiresAt: string }>('POST', `/concerts/${concert}/queue/captcha-verifications`, { challengeId, answer }, { ...headers(attempt), 'X-Attempt-Transition': transition })
 

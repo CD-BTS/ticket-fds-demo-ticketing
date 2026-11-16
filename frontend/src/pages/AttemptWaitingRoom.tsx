@@ -4,6 +4,7 @@ import { queueApi, type QueueStatus, captchaChallenge, captchaVerify, type Captc
 import { ApiError } from '../api/client'
 import { captchaTransition, clearAttempt, reportStage, retryTransient } from '../api/bookingAttempts'
 import { useAuth } from '../auth/AuthContext'
+import HCaptchaWidget from '../components/HCaptchaWidget'
 
 interface Props { concertId: string; attemptId?: string; onAdmit: () => void | Promise<void> }
 export default function AttemptWaitingRoom({ concertId, attemptId, onAdmit }: Props) {
@@ -45,16 +46,20 @@ export default function AttemptWaitingRoom({ concertId, attemptId, onAdmit }: Pr
     })
     return () => { alive = false; clearTimeout(timer) }
   }, [concertId, userId, attemptId, token, retry])
-  const verify = async () => {
+  const verify = async (value: string = answer) => {
     if (!challenge || !userId || verificationLock.current) return
     verificationLock.current = true
     setBusy(true);setError('')
     try {
-      const transition = await captchaTransition(userId, concertId, challenge.challengeId, answer)
-      const grant = await retryTransient(() => captchaVerify(concertId, attemptId, challenge.challengeId, answer, transition))
+      const transition = await captchaTransition(userId, concertId, challenge.challengeId, value)
+      const grant = await retryTransient(() => captchaVerify(concertId, attemptId, challenge.challengeId, value, transition))
       setToken(grant.captchaToken);setChallenge(null)
     }
-    catch (e) { setError((e as Error).message) }
+    catch (e) {
+      setError((e as Error).message)
+      // hCaptcha 토큰은 한 번만 쓸 수 있으므로, 실패하면 새 확인을 받아 위젯을 처음 상태로 되돌린다
+      if (challenge.provider === 'hcaptcha') setRetry(n => n + 1)
+    }
     finally { setBusy(false);verificationLock.current = false }
   }
   const leave = async () => {
@@ -68,15 +73,21 @@ export default function AttemptWaitingRoom({ concertId, attemptId, onAdmit }: Pr
     } catch (e) { setError((e as Error).message) }
     finally { setBusy(false) }
   }
+  const hcaptcha = challenge?.provider === 'hcaptcha' && !!challenge.siteKey
   return <section className="card waiting">
     <h1>{challenge ? '보안 확인' : '입장 대기'}</h1>
-    {challenge ? <form onSubmit={e => { e.preventDefault();verify() }}>
+    {challenge && hcaptcha ? <div className="captcha-box">
+      <p className="captcha-notice">의심·위험 계정으로 분류되어 추가 보안 확인이 필요합니다.</p>
+      <HCaptchaWidget key={challenge.challengeId} siteKey={challenge.siteKey!} onVerify={token => { setAnswer(token);verify(token) }} onError={setError} />
+      {busy && <p className="muted small">확인 중…</p>}
+      <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setRetry(n => n + 1)}>새로 시도</button>
+    </div> : challenge ? <form onSubmit={e => { e.preventDefault();verify() }}>
       <p>{challenge.question}</p><input aria-label="보안 확인 답" value={answer} onChange={e => setAnswer(e.target.value)} />
       <button className="btn btn-primary" disabled={busy || !answer}>확인</button>
       <button type="button" className="btn btn-ghost" onClick={() => setRetry(n => n + 1)}>새 문제</button>
     </form> : <p>{status?.status === 'WAITING' ? `현재 대기 순번 ${status.position}` : '입장 상태를 확인하고 있습니다.'}</p>}
-      {error && <p className="error" role="alert">{error}</p>}
-      {!challenge && error && <button className="btn btn-ghost" disabled={busy} onClick={() => setRetry(n => n + 1)}>다시 확인</button>}
+    {error && <p className="error" role="alert">{error}</p>}
+    {!challenge && error && <button className="btn btn-ghost" disabled={busy} onClick={() => setRetry(n => n + 1)}>다시 확인</button>}
     <button className="btn btn-ghost" disabled={busy} onClick={leave}>예매 시도 취소</button>
   </section>
 }
