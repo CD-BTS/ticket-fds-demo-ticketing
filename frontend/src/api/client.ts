@@ -1,6 +1,7 @@
 import type { ApiEnvelope } from './types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
+export const API_BASE = BASE
 const TOKEN_KEY = 'fds.token'
 
 export const USE_MOCK_BTS = import.meta.env.VITE_USE_MOCK_BTS !== 'false'

@@ -269,7 +269,7 @@ const real: TicketingApi = {
   confirmBooking: (holdId, _u, paymentIdentifier) => request('POST', '/bookings', { holdId, paymentIdentifier }),
   cancelBooking: (bookingId) => request('POST', `/bookings/${bookingId}/cancel`),
   listMyBookings: () => request('GET', '/bookings/me'),
-  // 데모 백엔드에는 QR 발급 API가 아직 없다(검표/CHECK_IN 미구현) → 호출하지 않고 '발급 전'으로 처리
+  // 실제 모드의 QR은 서버가 발급하지 않는다. 등록된 기기가 직접 생성한다(components/TicketQr.tsx, api/tickets.ts).
   getTicketQr: async () => null,
 }
 

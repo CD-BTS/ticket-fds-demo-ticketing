@@ -24,6 +24,15 @@ public class OutboxRepository {
                 """,user,service,UUID.randomUUID().toString(),booking+":"+type,booking,type,occurred,metadata,now,now);
     }
 
+    /** 예매 그룹(aggregate) 순서를 따르되 전이 ID는 티켓 단위라 같은 예매의 여러 좌석이 충돌하지 않는다. */
+    public void appendCheckIn(long user,String service,String booking,String ticket,LocalDateTime occurred,String metadata,LocalDateTime now){
+        jdbc.update("""
+                INSERT INTO outbox_events(user_id,service_id,external_event_id,business_transition_id,aggregate_id,
+                event_type,occurred_at_utc,metadata,next_attempt_at,created_at)
+                VALUES(?,?,?,?,?,'CHECK_IN',?,?,?,?)
+                """,user,service,UUID.randomUUID().toString(),ticket+":CHECK_IN",booking,occurred,metadata,now,now);
+    }
+
     public long appendAttempt(long user,String service,String attempt,long journal,LocalDateTime occurred,String metadata,LocalDateTime now){
         String transition="attempt-event:"+journal;
         jdbc.update("""

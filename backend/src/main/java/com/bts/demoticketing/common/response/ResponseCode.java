@@ -30,6 +30,19 @@ public enum ResponseCode {
 	BOOKING_CONFLICT(HttpStatus.CONFLICT, "BOOKING_CONFLICT", "좌석 상태가 변경되어 예매할 수 없습니다."),
 	BOOKING_NOT_FOUND(HttpStatus.NOT_FOUND, "BOOKING_NOT_FOUND", "예매 내역을 찾을 수 없습니다."),
 	BOOKING_NOT_CANCELLABLE(HttpStatus.CONFLICT, "BOOKING_NOT_CANCELLABLE", "취소할 수 없는 예매입니다."),
+
+	TICKET_NOT_FOUND(HttpStatus.NOT_FOUND, "TICKET_NOT_FOUND", "티켓을 찾을 수 없습니다."),
+	TICKET_NOT_ADMITTABLE(HttpStatus.CONFLICT, "TICKET_NOT_ADMITTABLE", "입장에 사용할 수 없는 티켓입니다."),
+	TICKET_ALREADY_CHECKED_IN(HttpStatus.CONFLICT, "TICKET_ALREADY_CHECKED_IN", "이미 입장 처리된 티켓입니다."),
+	DEVICE_KEY_INVALID(HttpStatus.BAD_REQUEST, "DEVICE_KEY_INVALID", "기기 공개키 형식이 올바르지 않습니다."),
+	DEVICE_PROOF_INVALID(HttpStatus.FORBIDDEN, "DEVICE_PROOF_INVALID", "기기 소유 증명이 올바르지 않거나 만료되었습니다."),
+	DEVICE_ALREADY_REGISTERED(HttpStatus.CONFLICT, "DEVICE_ALREADY_REGISTERED", "이미 기기가 등록된 티켓입니다. 기기 변경을 이용해 주세요."),
+	DEVICE_NOT_REGISTERED(HttpStatus.CONFLICT, "DEVICE_NOT_REGISTERED", "등록된 기기가 없는 티켓입니다. 먼저 기기를 등록해 주세요."),
+	DEVICE_CHANGE_LIMIT(HttpStatus.CONFLICT, "DEVICE_CHANGE_LIMIT", "기기 변경 가능 횟수를 초과했습니다."),
+	QR_INVALID(HttpStatus.BAD_REQUEST, "QR_INVALID", "QR 형식이 올바르지 않습니다."),
+	QR_REJECTED(HttpStatus.FORBIDDEN, "QR_REJECTED", "유효하지 않은 QR입니다."),
+	QR_EXPIRED(HttpStatus.FORBIDDEN, "QR_EXPIRED", "만료된 QR입니다. 최신 QR을 다시 제시해 주세요."),
+	CHECKIN_NOT_OPEN(HttpStatus.FORBIDDEN, "CHECKIN_NOT_OPEN", "입장 가능 시간이 아닙니다."),
 	REQUEST_FAILED(HttpStatus.BAD_REQUEST, "REQUEST_FAILED", "요청을 처리할 수 없습니다.");
 
 	private final HttpStatus status;
