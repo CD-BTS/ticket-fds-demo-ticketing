@@ -9,7 +9,6 @@ import { dateTime, won } from '../components/format'
 import CardManager from '../components/CardManager'
 import QrModal from '../components/QrModal'
 import { useBehavior } from '../hooks/useBehavior'
-import { FEATURE_SPECS, formatFeature } from '../risk/features'
 
 export default function MyPage() {
     const { userId } = useAuth()
@@ -44,8 +43,6 @@ export default function MyPage() {
     }, [userId, bookings]) // 예매/취소 후에도 다시 계산
 
     const applied = risk?.applied ?? null
-    // 서버 정책이 등급을 정하는 경우(또는 서버 연동 중 조회 실패)에는 브라우저 산정의 정책 줄을 숨긴다.
-    const serverDecides = !!risk && (!applied || applied.fromServer)
 
     const cancel = async (b: Booking) => {
         if (!userId || !window.confirm(`'${b.concertTitle}' 예매를 취소할까요?`)) return
@@ -83,53 +80,7 @@ export default function MyPage() {
             {risk && !applied && (
                 <p className="small muted">서버에서 계정 정책을 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.</p>
             )}
-            {risk && (
-                <details className="account-detail">
-                    <summary>{applied?.fromServer ? '브라우저 참고 산정 보기' : '산정 내역 보기'}</summary>
-                    <div className="detail-cols">
-                        <div>
-                            <h3 className="feature-title">신용 점수 산정</h3>
-                            <ul>
-                                <li><span>기본 신뢰도 (base_credit)</span><b>{risk.baseCredit}</b></li>
-                                {risk.penalties.map((p) => (
-                                    <li key={p.key} className={p.points ? 'is-hit' : ''}>
-                                        <span>{p.label}</span>
-                                        <b>{p.points ? `−${p.points}` : '0'}</b>
-                                    </li>
-                                ))}
-                                <li className="sum"><span>감점 합계 (dynamic_penalty = 의심 점수)</span><b>{risk.dynamicPenalty}</b></li>
-                                <li className="sum"><span>신용 점수 (credit_score)</span><b>{risk.credit}</b></li>
-                                {!serverDecides && <li><span>적용 정책 (penalty_policy)</span><b>{risk.policy}</b></li>}
-                            </ul>
-                        </div>
-
-                        <div>
-                            <h3 className="feature-title">행동 지표 (Feature)</h3>
-                            <ul className="features">
-                                {FEATURE_SPECS.map((f) => (
-                                    <li key={f.key} title={`${f.definition} · 기준 후보 ${f.candidates}`}>
-                                        <span>
-                                            {f.label} <code>{f.key}</code>
-                                        </span>
-                                        <b className={f.source === 'server' ? 'is-server' : ''}>{formatFeature(risk.features, f.key)}</b>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    </div>
-                    {serverDecides ? (
-                        <p className="small muted">
-                            브라우저에서 측정 가능한 지표만 반영한 참고값입니다. 위에 표시된 계정 등급과 적용 정책은 이 값이 아니라
-                            서버의 정책 결정을 따르며, 대기열 진입 시 같은 정책(CAPTCHA, 대기열 후순위)이 적용됩니다.
-                        </p>
-                    ) : (
-                        <p className="small muted">
-                            브라우저에서 측정 가능한 지표만 반영한 참고값입니다. AI 이상 점수, 카드·IP 집계, 관람·노쇼 이력은 서버 연동 후
-                            반영됩니다. 적용 정책(CAPTCHA, 대기열 후순위)은 정책 표시만 하며 아직 화면에 적용되지는 않습니다.
-                        </p>
-                    )}
-                </details>
-            )}
+            
             {error && <p className="error" role="alert">{error}</p>}
 
             {userId && <CardManager userId={userId} />}
