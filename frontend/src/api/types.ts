@@ -95,6 +95,48 @@ export interface TicketQr {
   refreshIntervalSec?: number
 }
 
+// ---- 티켓별 동적 QR · 기기 바인딩 (docs/api-spec.md "티켓과 동적 QR") ----
+export type TicketStatus = 'ISSUED' | 'CHECKED_IN' | 'CANCELLED'
+
+export interface TicketDevice {
+  deviceId: string
+  registeredAt: string
+  /** 남은 기기 변경 횟수(티켓당 최대 3회) */
+  changesRemaining: number
+}
+
+/** 예매 좌석 1개 = 티켓 1장. device 가 null 이면 아직 입장 기기를 등록하지 않은 티켓 */
+export interface Ticket {
+  ticketId: string
+  seatId: string
+  status: TicketStatus
+  checkedInAt: string | null
+  device: TicketDevice | null
+}
+
+export interface DeviceChallenge {
+  challengeId: string
+  challenge: string
+  expiresAt: string
+}
+
+/** 기기 등록·변경 응답. totp.secret 은 이 응답에서 한 번만 내려온다. */
+export interface DeviceEnrollment {
+  ticketId: string
+  deviceId: string
+  totp: { secret: string; algorithm: 'SHA1'; digits: number; period: number }
+  registeredAt: string
+  serverTime: string
+  changesRemaining: number
+}
+
+export interface CheckInResult {
+  ticketId: string
+  concertTitle: string
+  seatId: string
+  checkedInAt: string
+}
+
 // ---- 계정 등급 / 의심 점수 (산식: src/risk/credit.ts, Feature: src/risk/features.ts) ----
 import type { AppliedStanding, CreditResult } from '../risk/credit'
 import type { BehaviorFeatures } from '../risk/features'

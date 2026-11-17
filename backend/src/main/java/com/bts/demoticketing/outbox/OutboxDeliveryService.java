@@ -36,8 +36,12 @@ public class OutboxDeliveryService {
                 body.put("serviceId",m.serviceId());body.put("externalEventId",m.externalId());
                 body.put("userId",uuid);body.put("eventType",m.eventType());
                 if(!m.eventType().equals("BOOKING_ATTEMPT"))body.put("bookingId",m.aggregateId());
+                Map<String,Object> metadata=new LinkedHashMap<>();
+                json.readValue(m.metadata(),Map.class).forEach((key,value)->metadata.put(String.valueOf(key),value));
+                // BTS는 CHECK_IN에 top-level ticketId를 요구한다. 원천 metadata에서 옮겨 싣는다.
+                if(m.eventType().equals("CHECK_IN"))body.put("ticketId",metadata.remove("ticketId"));
                 body.put("occurredAt",m.occurredAt().toInstant(ZoneOffset.UTC).toString());
-                body.put("metadata",json.readValue(m.metadata(),Map.class));
+                body.put("metadata",metadata);
                 payload=json.writeValueAsString(body);
                 tx.freeze(m,payload);
             }

@@ -77,10 +77,64 @@ paymentIdentifier는 TEST_PAYMENT_IDENTIFIERS의 서버 허용 목록 값이며 
 
 AttemptSnapshot은 `{attemptId,concertId,stage,status,sequence,holdId,bookingId}`다. BOOKING_ATTEMPTS_ENABLED=false이면 capability만 false를 반환하고 attempt API는 503이며 기존 attempt 없는 예매는 유지한다. 상세 전이와 멱등성은 [예매 시도 명세](booking-attempts.md)를 따른다.
 
+## 티켓과 동적 QR
+
+예매 좌석 1개가 티켓 1장(`admission_tickets`)이다. 티켓마다 활성 기기를 1대 등록하고, 등록된 기기가 30초마다 QR을 직접 만든다. 서버는 QR을 발급하지 않는다. CHECKIN_ENABLED=false이면 아래 API는 모두 503/SERVICE_UNAVAILABLE이며 기존 예매·취소는 영향이 없다.
+
+| API | 인증 | 요청 | 성공 |
+|---|---|---|---|
+| GET /api/v1/bookings/{bookingId}/tickets | Bearer, 예매 소유자 | 없음 | 200; Ticket[] |
+| POST /api/v1/tickets/{ticketId}/device-challenges | Bearer, 티켓 소유자 | body 없음 또는 `{}` | 201; `{challengeId,challenge,expiresAt}` |
+| POST /api/v1/tickets/{ticketId}/device | Bearer, 티켓 소유자 | `{challengeId,publicKey,proof}` | 201; Enrollment (최초 등록) |
+| POST /api/v1/tickets/{ticketId}/device/change | Bearer, 티켓 소유자 | `{challengeId,publicKey,proof}` | 200; Enrollment (기기 변경) |
+| POST /api/v1/check-ins | X-Gate-Key | `{qr}` | 200; `{ticketId,concertTitle,seatId,checkedInAt}` |
+
+- Ticket: `{ticketId,seatId,status,checkedInAt,device}`. status는 ISSUED/CHECKED_IN/CANCELLED. device는 `{deviceId,registeredAt,changesRemaining}` 또는 미등록이면 null이다. 공개키·비밀키는 조회 응답에 없다.
+- Enrollment: `{ticketId,deviceId,totp:{secret,algorithm:"SHA1",digits:6,period:30},registeredAt,serverTime,changesRemaining}`. `totp.secret`(20바이트의 base64url)은 이 응답에서 한 번만 전달되며 다시 조회할 수 없다. `serverTime`은 기기 시계 보정용이다.
+- publicKey는 ECDSA P-256 공개키 SPKI DER의 base64url(패딩 없음)이다. 다른 곡선·형식은 400/DEVICE_KEY_INVALID다.
+
+### 기기 등록과 변경
+
+1. 클라이언트가 Web Crypto로 non-extractable ECDSA P-256 키 쌍을 만든다. 개인키는 서버로 보내지 않는다.
+2. `device-challenges`로 일회성 챌린지를 받는다. 유효 시간은 기본 2분이며 티켓·사용자당 미사용 챌린지는 최신 1개만 유효하다.
+3. 개인키로 `<목적>.<ticketId>.<challenge>.<publicKey>` 문자열(UTF-8)에 서명(SHA-256, r‖s 64바이트의 base64url)해 `proof`로 보낸다. 목적은 최초 등록 `BTS-DEVICE-REGISTER`, 변경 `BTS-DEVICE-CHANGE`다.
+4. 서버는 소유자·티켓 상태·챌린지·서명을 검증하고 챌린지를 소비한 뒤 티켓별 TOTP 비밀키를 새로 만들어 AES-256-GCM으로 암호화 저장한다.
+
+최초 등록과 변경은 별도 endpoint다. 이미 등록된 티켓의 `device` 호출은 409/DEVICE_ALREADY_REGISTERED, 미등록 티켓의 `device/change`는 409/DEVICE_NOT_REGISTERED다. 등록된 기기에서 QR 화면을 다시 여는 것은 서버 호출 없이 저장된 키를 그대로 쓰며 등록·변경이 아니다. 변경은 기존 바인딩을 즉시 폐기하고 저장된 비밀키를 삭제하며, 티켓당 최대 3회(DEVICE_MAX_CHANGES)다. 초과는 409/DEVICE_CHANGE_LIMIT다. 만료·소비·다른 티켓/사용자의 챌린지와 잘못된 서명은 403/DEVICE_PROOF_INVALID다. 입장 완료·취소된 티켓은 409/TICKET_NOT_ADMITTABLE다.
+
+브라우저 저장소 삭제·기기 분실·등록 응답 유실은 모두 "기기 변경"으로 복구하며 횟수를 차감한다. 횟수를 다 쓰면 API로는 복구할 수 없다.
+
+### QR 형식과 검표
+
+QR 내용은 `BTS1.<ticketId>.<deviceId>.<epochSeconds>.<totp>.<signature>`다. totp는 RFC 6238(HMAC-SHA1, 6자리, 30초), signature는 앞 다섯 필드 문자열에 대한 기기 개인키 서명이다. 검표기는 내용을 해석하지 않고 그대로 `qr`에 담아 보낸다. `X-Gate-Key`는 서버 설정 GATE_API_KEY와 일치해야 하며 Demo 사용자 세션은 검표 권한이 아니다.
+
+서버는 예매 행을 잠근 뒤 순서대로 검증한다: 활성 바인딩의 deviceId 일치 → 기기 서명 → `epochSeconds`가 서버 시각 기준 ±1 step → TOTP 일치 → 티켓 ISSUED·예매 CONFIRMED → 입장 가능 시간(예매 snapshot의 공연 시작 − CHECKIN_OPENS_BEFORE 이상, 공연 종료 미만). 통과하면 `status='ISSUED'` 조건부 UPDATE로 CHECKED_IN 전환과 CHECK_IN Outbox 저장을 한 트랜잭션에서 수행한다. 동시에 여러 검표기가 같은 QR을 보내도 한 건만 성공한다.
+
+| 결과 | 응답 |
+|---|---|
+| 형식 오류 | 400 / QR_INVALID |
+| 검표 담당자 키 없음·불일치 | 401 / UNAUTHORIZED |
+| 폐기된·다른 기기, 서명 불일치, TOTP 불일치 | 403 / QR_REJECTED |
+| 시각이 허용 범위 밖 | 403 / QR_EXPIRED |
+| 입장 가능 시간 아님 | 403 / CHECKIN_NOT_OPEN |
+| 없는 티켓 | 404 / TICKET_NOT_FOUND |
+| 이미 입장 | 409 / TICKET_ALREADY_CHECKED_IN |
+| 취소된 예매·티켓 | 409 / TICKET_NOT_ADMITTABLE |
+
+### 보안 한계
+
+- TOTP 비밀키만 복사해서는 QR을 만들 수 없다. 서버는 활성 바인딩의 공개키에 대응하는 개인키 서명을 요구한다.
+- **캡처한 QR을 유효 시간(최대 약 90초) 안에 다른 사람이 먼저 제시하는 공격은 막지 못한다.** 서버는 그 QR이 등록 기기에서 만들어졌다는 것만 확인할 수 있고 누가 제시했는지는 알 수 없다. 최초 1회만 성공하므로 정당한 소유자는 이후 TICKET_ALREADY_CHECKED_IN을 받는다. 완전한 방지는 검표기 발급 챌린지에 기기가 현장에서 응답하는 방식 등이 필요하며 이번 범위가 아니다.
+- non-extractable 키는 키 원문 유출만 막는다. XSS나 같은 브라우저 프로필에 접근한 공격자는 키를 "사용"해 QR을 만들 수 있다. 하드웨어 증명(attestation)이 없어 "기기"는 사실상 "브라우저 프로필"이다.
+- Demo 로그인은 ID 입력만으로 세션을 발급하므로 ID를 아는 사람은 기기 변경을 호출할 수 있다. 변경 횟수 제한과 `deviceChanged` 이벤트 필드로 흔적만 남긴다.
+- 검표 담당자 키는 공유 정적 키다. 담당자별 계정·권한 회수·시도 횟수 제한은 없다.
+- 비밀키 전달은 TLS에 의존한다. 운영 환경은 HTTPS가 필수이며 Web Crypto와 카메라도 보안 컨텍스트(HTTPS 또는 localhost)에서만 동작한다.
+- TOTP 비밀키, 서명, QR 원문, 검표 담당자 키는 로그·이벤트 payload에 남기지 않는다. 로그에는 ticketId·deviceId·결과 코드만 기록한다.
+
 ## 프론트엔드 연동 경계
 
 실제 Demo 로그인과 예매에는 VITE_USE_MOCK_BTS=false와 VITE_USE_MOCK_TICKETING=false를 설정한다. 실제 예매 설정에서는 대기열도 실제 API를 사용한다. 단계 관측은 sessionStorage에 attempt/transition 식별자와 미확정 전이를 먼저 저장한 뒤 재전송한다. 화면 새로고침은 서버의 attempt·hold·booking 상태로 복원한다.
 
-카드 관리·QR·사용자 신용 화면에는 Mock 또는 미구현 API adapter가 남아 있다. Demo에는 카드 등록·BTS 사용자 상세 프록시·QR 발급·서버 검표 API가 없다. QR 표시나 브라우저 텔레메트리를 CHECK_IN으로 보내지 않는다. BTS UUID/Key를 브라우저 세션 식별자로 대체하지 않는다.
+카드 관리·사용자 신용 화면에는 Mock 또는 미구현 API adapter가 남아 있다. Demo에는 카드 등록·BTS 사용자 상세 프록시 API가 없다. 실제 API 모드의 QR 모달은 기기 키(IndexedDB의 non-extractable CryptoKey)로 동적 QR을 만들고, Mock 모드는 VITE_MOCK_QR의 정적 mock QR만 표시한다. 검표기 화면은 `/gate`이며 로그인 없이 검표 담당자 키로 사용한다. QR 표시나 브라우저 텔레메트리를 CHECK_IN으로 보내지 않는다. CHECK_IN은 서버 검표 성공으로만 생성된다. BTS UUID/Key를 브라우저 세션 식별자로 대체하지 않는다.
 
 서버 간 계약은 [BTS 연동 명세](bts-integration.md), 저장 구조는 [DB 명세](erd.md)를 따른다.

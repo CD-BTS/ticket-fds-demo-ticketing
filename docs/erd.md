@@ -24,6 +24,9 @@ erDiagram
   bookings ||--o{ booking_seats : contains
   concert_seats ||--o{ booking_seats : history
   booking_seats ||--o| admission_tickets : issues
+  admission_tickets ||--o{ ticket_device_bindings : binds
+  admission_tickets ||--o{ ticket_device_challenges : challenges
+  demo_users ||--o{ ticket_device_bindings : registers
   demo_users ||--o{ outbox_events : emits
   demo_users ||--o{ booking_attempts : starts
   concerts ||--o{ booking_attempts : targets
@@ -65,6 +68,24 @@ concert_seats.active_hold_id/active_booking_id는 현재 점유를 가리키고 
 
 request_fingerprint는 전이 내용의 SHA-256이다. 동일 transition의 같은 내용은 재사용하고 다른 내용은 충돌한다. sequence는 attempt 행 잠금 안에서 증가한다. outbox_id가 NULL인 journal은 주기 작업에서 Outbox에 연결한다. 업무 확정과 journal 완료는 예약 트랜잭션에서 원자적으로 처리하고 원격 전송은 분리한다.
 
+## 티켓 기기 바인딩 테이블
+
+admission_tickets는 변경하지 않는다. 검표는 기존 status(ISSUED→CHECKED_IN)와 checked_in_at을 그대로 쓴다.
+
+| 테이블 | 컬럼과 제약 |
+|---|---|
+| ticket_device_bindings | id PK; public_id CHAR(36) ascii_bin UNIQUE(QR의 deviceId); ticket_id FK admission_tickets; user_id FK demo_users; status ACTIVE/REVOKED; generation INT(1=최초 등록, 변경마다 +1); public_key VARBINARY(128)(P-256 SPKI DER); totp_secret_enc VARBINARY(64) nullable; created_at; revoked_at; active_ticket_id 생성 컬럼; UNIQUE(active_ticket_id), UNIQUE(ticket_id,generation) |
+| ticket_device_challenges | id PK; public_id CHAR(36) ascii_bin UNIQUE; ticket_id/user_id FK; challenge CHAR(43); expires_at; UNIQUE(ticket_id,user_id) |
+
+- `active_ticket_id`는 status가 ACTIVE일 때만 ticket_id를 갖는 STORED 생성 컬럼이다. UNIQUE로 티켓당 활성 기기 1개를 DB가 보장한다.
+- ck_device_status: ACTIVE는 암호화된 비밀키가 있고 revoked_at이 NULL, REVOKED는 비밀키가 NULL이고 revoked_at이 있다. 기기 변경 시 이전 행은 비밀키를 지우고 이력으로만 남는다.
+- totp_secret_enc는 AES-256-GCM의 IV(12)‖암호문‖tag(16)이다. 키는 TICKET_SECRET_KEY이며 AAD로 ticketId:deviceId를 묶는다. 키를 바꾸면 기존 바인딩은 복호화할 수 없어 모두 기기 변경이 필요하다.
+- 챌린지는 비밀이 아닌 난수이며 사용 시 행을 삭제한다. 새 챌린지 발급은 같은 티켓·사용자의 이전 행을 대체한다.
+- 기기 등록·변경·검표는 해당 예매 행(bookings)을 FOR UPDATE로 잠가 예매 취소와 직렬화한다.
+- 예매 취소는 바인딩을 건드리지 않는다. 취소된 티켓의 바인딩은 ACTIVE로 남지만 티켓 상태 때문에 검표·변경이 모두 거부된다.
+
+정확한 정의는 [05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)을 따른다.
+
 ## Outbox
 
 outbox_events는 id PK와 user_id FK, service_id, external_event_id, business_transition_id, aggregate_id, event_type, occurred_at_utc, metadata JSON, payload LONGTEXT, delivery_status, lease_token, locked_until, retries, next_attempt_at, bts_event_id, last_error_code, created_at, sent_at을 저장한다.
@@ -83,5 +104,7 @@ outbox_events는 id PK와 user_id FK, service_id, external_event_id, business_tr
 ## 스키마 적용
 
 Hibernate ddl-auto=none, spring.sql.init.mode=never다. Compose는 새 빈 볼륨에서 schema/seed/02/03을 초기화하며 기존 볼륨을 자동 마이그레이션하지 않는다. [04-booking-attempts.sql](../backend/db/04-booking-attempts.sql)은 MySQL 8.0.16+에서 Demo DB에 한 번만 적용한다. 두 attempt 테이블 생성과 Outbox CHECK 교체를 포함하며 반복 실행용 IF NOT EXISTS 스크립트가 아니다.
+
+[05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)도 같은 방식으로 한 번만 적용한다. 테이블 두 개를 추가할 뿐 기존 테이블·CHECK를 바꾸지 않으며, 적용 후 CHECKIN_ENABLED를 활성화한다. 절차는 [검표 실행 안내](../backend/scripts/README-TicketCheckIn.md)를 따른다.
 
 적용 전 실제 DB 이름·기존 테이블·CHECK·백업을 확인하고 쓰기 작업을 중지한다. DDL은 개별 자동 commit되며 CHECK 교체는 메타데이터 잠금을 얻는다. 일부 실패 시 자동 재실행·임의 복구하지 말고 현재 스키마를 먼저 확인한다. 이미 적용된 DB에 재실행하거나 기존 업무 데이터·BTS 스키마를 초기화하지 않는다. 적용 후 BOOKING_ATTEMPTS_ENABLED를 명시적으로 활성화한다.
