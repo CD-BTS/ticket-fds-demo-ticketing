@@ -1307,3 +1307,40 @@ section.card {
     .direct-form .field {
         margin-top: 0;
     }
+
+.pay-hint { margin: 10px 0 8px; }
+.card-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.card-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; font: inherit; color: var(--text); text-align: left; background: #fff; border: 1px solid var(--line-2); border-radius: 10px; cursor: pointer; transition: border-color .15s, background .15s; }
+.card-row:hover:not(:disabled) { border-color: #b9c9f3; background: #f8faff; }
+.card-row:disabled { opacity: .5; cursor: not-allowed; }
+.card-row-main { display: inline-flex; align-items: baseline; gap: 10px; }
+.card-row-act { color: var(--accent); font-weight: 700; font-size: 13px; white-space: nowrap; }
+.card-row-direct { border-style: dashed; }
+.direct-form { margin-top: 8px; padding: 14px 16px 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; }
+.direct-form .field { margin-top: 0; }
+
+/* 동적 QR (티켓별 기기 바인딩) */
+.qr-tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
+.qr-tabs button { min-height: 30px; padding: 0 12px; border-radius: 20px; border: 1px solid var(--line-2); background: #fff; color: #586477; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.qr-tabs button.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.qr-action { display: grid; gap: 12px; justify-items: center; font-size: 13px; line-height: 1.6; }
+.qr-done { margin: 0; display: grid; gap: 6px; color: var(--ok); font-size: 20px; font-weight: 800; }
+.qr-timer { margin: 8px 0 2px; font-size: 13px; color: var(--muted); }
+.qr-timer b { color: var(--accent); font-variant-numeric: tabular-nums; }
+
+/* 검표기 화면 (/gate) */
+.gate { max-width: 460px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 14px; }
+.gate-field { display: grid; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.gate-field input, .gate-field textarea { width: 100%; padding: 10px 12px; font: inherit; font-weight: 400; color: var(--text); background: #fff; border: 1px solid var(--line-2); border-radius: 8px; }
+.gate-field textarea { resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.gate-camera { aspect-ratio: 4 / 3; display: grid; place-items: center; overflow: hidden; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
+.gate-camera video { width: 100%; height: 100%; object-fit: cover; }
+.gate-manual { display: grid; gap: 10px; }
+.gate-result { display: grid; gap: 4px; padding: 16px; border-radius: 12px; border: 1px solid; text-align: center; font-size: 13px; }
+.gate-result b { font-size: 24px; font-weight: 800; }
+.gate-result.is-ok { background: var(--ok-soft); border-color: #bfe6d5; color: var(--ok); }
+.gate-result.is-no { background: var(--danger-soft); border-color: #f4d9d6; color: var(--danger); }
+.gate-history { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.gate-history li { padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+.gate-history .is-ok b { color: var(--ok); }
+.gate-history .is-no b { color: var(--danger); }

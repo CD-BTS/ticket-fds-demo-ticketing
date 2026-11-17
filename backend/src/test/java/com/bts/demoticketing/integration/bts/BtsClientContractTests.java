@@ -35,6 +35,30 @@ class BtsClientContractTests {
         }finally{server.stop(0);}
     }
 
+    @Test void checkInEventCarriesTicketIdAndRejectsAResponseForAnotherTicket()throws Exception{
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        String uuid=UUID.randomUUID().toString();
+        List<Map<String,Object>> received=new ArrayList<>();
+        server.createContext("/api/v1/events",e->{
+            Map<String,Object> data=new LinkedHashMap<>(json.readValue(e.getRequestBody().readAllBytes(),new TypeReference<Map<String,Object>>() {}));
+            received.add(new LinkedHashMap<>(data));data.put("eventId",9);
+            if("e-mismatch".equals(data.get("externalEventId")))data.put("ticketId","another-ticket");
+            byte[] body=json.writeValueAsBytes(Map.of("success",true,"code","COMMON_201","data",data));
+            e.sendResponseHeaders(201,body.length);e.getResponseBody().write(body);e.close();
+        });
+        server.start();
+        try{
+            var client=new BtsClient(new BtsSettings(true,"http://127.0.0.1:"+server.getAddress().getPort(),"service","test-only"),json);
+            Map<String,Object> event=new LinkedHashMap<>(Map.of("serviceId","service","externalEventId","e1","userId",uuid,
+                    "eventType","CHECK_IN","bookingId","b1","ticketId","t1"));
+            assertEquals(9,client.send(json.writeValueAsString(event)));
+            assertEquals("t1",received.get(0).get("ticketId"));assertEquals("b1",received.get(0).get("bookingId"));
+            event.put("externalEventId","e-mismatch");
+            var error=assertThrows(BtsClient.DeliveryFailure.class,()->client.send(json.writeValueAsString(event)));
+            assertEquals("INVALID_BTS_RESPONSE",error.code);assertFalse(error.retryable);
+        }finally{server.stop(0);}
+    }
+
     @Test void disabledDeliveryNeverUsesAnEmptyKey(){
         var client=new BtsClient(new BtsSettings(false,"","service",""),json);
         var error=assertThrows(BtsClient.DeliveryFailure.class,()->client.send("{}"));

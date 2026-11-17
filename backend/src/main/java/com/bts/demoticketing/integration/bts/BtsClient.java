@@ -35,7 +35,7 @@ public class BtsClient {
     public long send(String payload){
         Map<?,?> data=post("/api/v1/events",payload);
         Map<?,?> sent=json.readValue(payload,Map.class);
-        for(String key:List.of("serviceId","externalEventId","userId","eventType","bookingId")){
+        for(String key:List.of("serviceId","externalEventId","userId","eventType","bookingId","ticketId")){
             if(!Objects.equals(sent.get(key),data.get(key)))throw new DeliveryFailure("INVALID_BTS_RESPONSE",false);
         }
         try {

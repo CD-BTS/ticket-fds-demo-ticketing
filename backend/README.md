@@ -26,7 +26,7 @@ Java 17 / Spring Boot 4.1.1 / Gradle Wrapper 9.7.1 / MySQL 8.0.16+.
 | POST | /api/v1/bookings/{bookingId}/cancel | Booking, Bearer 필수 |
 | GET | /api/v1/bookings/me | 본인 Booking[], Bearer 필수 |
 
-공개 조회에는 인증/대기열을 요구하지 않는다. 쓰기는 24시간 데모 Bearer 세션으로 소유권을 확인하며 좌석 선점은 해당 공연 Redis ADMITTED 권한도 요구한다(#17). 유효한 본인 hold는 입장 만료 후에도 예매 확정할 수 있다. ID 입력만으로 같은 신원을 재시작하는 공유 데모 방식이며 실제 계정 소유권 증명이 아니다. FIFO 대기열과 선점 입장 권한 검증은 구현했으며 실제 PG/환불·QR/검표·Feature 추출은 미구현이다. BTS BOOKING/CANCEL 전송은 구현했지만 실제 발급 설정이 없는 기본 환경에서는 PENDING으로 보존한다. [#17 테스트 및 직접 API 호출](scripts/README-QueueAdmission.md)을 참고한다.
+공개 조회에는 인증/대기열을 요구하지 않는다. 쓰기는 24시간 데모 Bearer 세션으로 소유권을 확인하며 좌석 선점은 해당 공연 Redis ADMITTED 권한도 요구한다(#17). 유효한 본인 hold는 입장 만료 후에도 예매 확정할 수 있다. ID 입력만으로 같은 신원을 재시작하는 공유 데모 방식이며 실제 계정 소유권 증명이 아니다. FIFO 대기열과 선점 입장 권한 검증은 구현했으며 실제 PG/환불·Feature 추출은 미구현이다. 동적 QR·기기 바인딩·검표(#40)는 [별도 안내](scripts/README-TicketCheckIn.md)를 따른다. BTS BOOKING/CANCEL 전송은 구현했지만 실제 발급 설정이 없는 기본 환경에서는 PENDING으로 보존한다. [#17 테스트 및 직접 API 호출](scripts/README-QueueAdmission.md)을 참고한다.
 
 ## 참고한 기존 BTS 코드
 
