@@ -30,9 +30,10 @@
 | POST /api/v1/concerts/{concertId}/queue | body 없음, 선택 X-Captcha-Token | 생성 201, 기존 등록 200; QueueSnapshot |
 | GET /api/v1/concerts/{concertId}/queue/me | body 없음 | 200; QueueSnapshot |
 | DELETE /api/v1/concerts/{concertId}/queue/me | body 없음 | 200; data=null |
-| POST /api/v1/concerts/{concertId}/queue/captcha-challenges | body 없음 | 200; challengeId,question,expiresAt |
+| POST /api/v1/concerts/{concertId}/queue/captcha-challenges | body 없음 | 200; challengeId,question,expiresAt,provider,siteKey |
 | POST /api/v1/concerts/{concertId}/queue/captcha-verifications | challengeId,answer; 선택 X-Attempt-Transition | 200; captchaToken,expiresAt |
 
+captcha-challenges 응답의 provider는 mock 또는 hcaptcha이며, siteKey는 hcaptcha일 때만 값이 있다(mock은 null). hcaptcha 모드에서는 브라우저 위젯이 발급한 토큰을 captcha-verifications의 answer로 전달하고(최대 8192자), 서버가 hCaptcha 검증 API로 확인한다. 검증에 쓰인 captchaToken은 한 번만 사용할 수 있다.
 QueueSnapshot은 `{status,position,expiresAt}`다. status는 NOT_JOINED/WAITING/ADMITTED/EXPIRED이며 WAITING 순번은 1부터, ADMITTED는 0이다. 날짜는 ISO 8601이다. 실제 API는 ticketId나 뒤 인원 수를 반환하지 않는다. 프론트엔드 adapter는 concertId를 ticketId로 사용하고 behind=0으로 채운다.
 
 정책은 서버가 인증된 사용자 기준으로 결정한다. ALLOW와 REQUIRE_CAPTCHA는 일반 그룹, DELAY는 후순위 그룹이며 REQUIRE_CAPTCHA/DELAY는 CAPTCHA 증명이 필요하다. RESTRICT는 403/QUEUE_RESTRICTED다. 일반 그룹이 우선이고 그룹 안에서는 FIFO다. 빈 자리가 있으면 즉시 입장하며 엄격한 우선순위로 후순위가 대기 만료될 수 있다.
@@ -43,7 +44,7 @@ CAPTCHA challenge는 기본 2분, 답 제출 최대 5회이며 grant도 기본 2
 
 같은 X-Attempt-Transition의 동일 challenge/입력 재전송은 grant TTL 동안 원래 성공·실패 결과를 반환하며 실패 횟수를 다시 차감하지 않는다. 같은 ID의 다른 입력은 409/DATA_CONFLICT다. CAPTCHA 답 원문은 재전송 식별용 브라우저 저장소나 이벤트 metadata에 보관하지 않는다. 원래 grant가 만료되거나 소비된 뒤 재전송해도 grant 유효 기간을 연장하지 않는다.
 
-POLICY_DECISION_MODE는 disabled(ALLOW), mock(서버 설정), bts(원격 정책 호출)다. bts 모드는 BTS UUID를 매핑한 뒤 `POST /api/v1/users/{uuid}/policy-decisions`에 `{context:"QUEUE_JOIN"}`을 전송하고 data.action을 읽는다. 원격 endpoint의 제공은 BTS 배포에 달려 있다. 장애·알 수 없는 action을 ALLOW로 우회하지 않는다. CAPTCHA_MODE는 disabled/mock만 지원하며 mock 산술 문제는 실제 봇 방지 공급자가 아니다.
+POLICY_DECISION_MODE는 disabled(ALLOW), mock(서버 설정), bts(원격 정책 호출)다. bts 모드는 BTS UUID를 매핑한 뒤 `POST /api/v1/users/{uuid}/policy-decisions`에 `{context:"QUEUE_JOIN"}`을 전송하고 data.action을 읽는다. 원격 endpoint의 제공은 BTS 배포에 달려 있다. 장애·알 수 없는 action을 ALLOW로 우회하지 않는다. CAPTCHA_MODE는 disabled/mock/hcaptcha를 지원한다. mock 산술 문제는 실제 봇 방지 공급자가 아니며 로컬 시연용이다. hcaptcha는 외부 공급자(hCaptcha)의 위젯과 서버 검증을 사용하고, 검증 API 장애 시 통과시키지 않고 503으로 응답한다.
 
 ## 좌석 선점과 예매
 

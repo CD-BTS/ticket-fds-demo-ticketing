@@ -19,8 +19,8 @@ import com.bts.demoticketing.integration.bts.PolicyDecisionClient;
 @Service
 public class CaptchaService {
     public record Verification(@NotBlank @Pattern(regexp="[a-f0-9]{64}") String challengeId,
-            @NotBlank @Size(max=100) String answer) {}
-    public record Challenge(String challengeId,String question,Instant expiresAt) {}
+            @NotBlank @Size(max=8192) String answer) {}
+    public record Challenge(String challengeId,String question,Instant expiresAt,String provider,String siteKey) {}
     public record Grant(String captchaToken,Instant expiresAt) {}
     private final StringRedisTemplate redis;
     private final QueueStore queues;
@@ -33,8 +33,8 @@ public class CaptchaService {
             @Value("${demo.captcha.challenge-ttl:PT2M}") Duration challengeTtl,
             @Value("${demo.captcha.grant-ttl:PT2M}") Duration grantTtl,
             @Value("${demo.captcha.max-attempts:5}") int attempts){
-        if(!Set.of("disabled","mock").contains(mode)||challengeTtl.toMillis()<1||grantTtl.toMillis()<1||attempts<1)
-            throw new IllegalArgumentException("Invalid CAPTCHA configuration; real provider is not implemented");
+        if(!Set.of("disabled","mock","hcaptcha").contains(mode)||challengeTtl.toMillis()<1||grantTtl.toMillis()<1||attempts<1)
+            throw new IllegalArgumentException("Invalid CAPTCHA configuration; mode must be disabled, mock or hcaptcha");
         this.redis=redis;this.queues=queues;this.verifier=providers.getIfAvailable();
         this.challengeTtl=challengeTtl.toMillis();this.grantTtl=grantTtl.toMillis();this.attempts=attempts;
     }
@@ -52,7 +52,7 @@ public class CaptchaService {
         enabled();String id=nonce();var problem=verifier.create();
         var result=call(List.of(queues.base(concert)+"captcha-challenge:"+id),"create",Long.toString(user),action.name(),
                 digest(problem.answer()),Long.toString(challengeTtl),Integer.toString(attempts));
-        return new Challenge(id,problem.question(),Instant.ofEpochMilli(Long.parseLong(result.get(0).toString())));
+        return new Challenge(id,problem.question(),Instant.ofEpochMilli(Long.parseLong(result.get(0).toString())),verifier.provider(),verifier.siteKey());
     }
     public Grant verify(String concert,long user,Verification body){
         return verify(concert,user,body,null);

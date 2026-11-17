@@ -97,6 +97,9 @@ POLICY_DECISION_MODE=bts는 BTS UUID를 확보하고 `POST /api/v1/users/{uuid}/
 | CHECKIN_OPENS_BEFORE | PT2H; 공연 시작 전 입장 허용 시간 |
 | DEVICE_CHALLENGE_TTL / DEVICE_MAX_CHANGES | PT2M / 3 |
 | POLICY_DECISION_MODE | disabled/mock/bts |
-| CAPTCHA_MODE | disabled/mock |
+| CAPTCHA_MODE | disabled/mock/hcaptcha; hcaptcha는 HCAPTCHA_SITE_KEY·HCAPTCHA_SECRET 필수 |
+| HCAPTCHA_SITE_KEY | hcaptcha 모드에서 필수; 브라우저 위젯에 전달되는 공개 키 |
+| HCAPTCHA_SECRET | hcaptcha 모드에서 필수; 서버 검증용 비밀 키, 런타임 비밀정보 |
+| HCAPTCHA_VERIFY_URL | 선택; 기본값 https://api.hcaptcha.com/siteverify |
 
 새 serviceId는 사용자·이벤트 생성 전에 결정한다. 이미 매핑된 기존 사용자의 namespace를 임의 변경하지 않는다. 스키마·마이그레이션은 [DB 명세](erd.md), 브라우저 계약은 [Demo API 명세](api-spec.md)를 따른다.

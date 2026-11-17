@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ApiError } from '../api/client'
 import { CARD_DIGITS, MAX_CARDS, cardsApi, type PaymentCard } from '../api/cards'
-import CardNumberField, { CardHelp } from './CardNumberField'
+import CardNumberField from './CardNumberField'
 
 /** 마이페이지: 계정에 결제 카드를 미리 등록·삭제한다 (등록한 카드는 결제창에서 바로 선택 가능) */
 export default function CardManager({ userId }: { userId: string }) {
@@ -63,7 +63,29 @@ export default function CardManager({ userId }: { userId: string }) {
         <button className="btn btn-ghost btn-sm" disabled={full} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
           {open ? '닫기' : full ? `최대 ${MAX_CARDS}개` : '+ 카드 등록'}
         </button>
-      </div>
+          </div>
+
+          {open && (
+              <form className="card-form" onSubmit={add}>
+                  <label className="field">
+                      <span>카드 별칭 (선택)</span>
+                      <input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={12} placeholder="예: 내 카드" autoComplete="off" autoFocus />
+                  </label>
+                  <CardNumberField value={digits} onChange={setDigits} disabled={busy} />
+                  <div className="card-form-side">
+                      <p id="card-help" className="small muted">
+                          실제 카드번호는 입력하지 마세요.
+                          <br />
+                          임의의 숫자 {CARD_DIGITS}자리면 됩니다. ({digits.length}/{CARD_DIGITS})
+                          <br />
+                          보안을 위해 화면과 저장소에는 끝 4자리만 남기고 전체 번호는 보관하지 않습니다.
+                      </p>
+                      <button className="btn btn-primary" disabled={digits.length !== CARD_DIGITS || busy}>
+                          {busy ? '등록 중…' : '카드 등록'}
+                      </button>
+                  </div>
+              </form>
+          )}
 
       {!cards ? (
         <p className="muted">불러오는 중…</p>
@@ -80,21 +102,6 @@ export default function CardManager({ userId }: { userId: string }) {
             </li>
           ))}
         </ul>
-      )}
-
-      {open && (
-        <form className="card-form" onSubmit={add}>
-          <label className="field">
-            <span>카드 별칭 (선택)</span>
-            <input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={12} placeholder="예: 내 카드" autoComplete="off" />
-          </label>
-          <CardNumberField value={digits} onChange={setDigits} disabled={busy} autoFocus />
-          <CardHelp count={digits.length} />
-          <p className="small muted">보안을 위해 화면과 저장소에는 끝 4자리만 남기고 전체 번호는 보관하지 않습니다.</p>
-          <button className="btn btn-primary" disabled={digits.length !== CARD_DIGITS || busy}>
-            {busy ? '등록 중…' : '카드 등록'}
-          </button>
-        </form>
       )}
 
       {error && <p className="error" role="alert">{error}</p>}
