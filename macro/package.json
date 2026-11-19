@@ -1,0 +1,12 @@
+{
+  "name": "ticket-fds-macro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "부정 사용자(매크로) 예매 데이터 생성용 Playwright 스크립트. 우리 데모 사이트에서만 사용한다.",
+  "scripts": {
+    "macro": "node macro.js"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}
