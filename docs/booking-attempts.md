@@ -55,4 +55,4 @@ data는 `{bookingAttemptCount,items}`이며 items에 attemptId/concertId/userId/
 
 ## 활성화
 
-BOOKING_ATTEMPTS_ENABLED 기본값은 false다. false에서는 capability=false, attempt API=503이며 attempt를 보내지 않는 기존 예매·대기열·CAPTCHA 경로는 유지한다. true는 [DB 명세](erd.md)의 attempt 스키마가 필요하다. 단계 Outbox 생성·전송은 DEMO_JOBS_ENABLED, 원격 전송은 BTS_ENABLED와 서버 인증 설정도 필요하다.
+BOOKING_ATTEMPTS_ENABLED 기본값은 true다(#44: BTS Feature가 시도 기준으로 확정됨). attempt 스키마(04)가 없는 기존 DB는 04를 적용하거나 false로 명시해야 한다. false에서는 capability=false, attempt API=503이며 attempt를 보내지 않는 기존 예매·대기열·CAPTCHA 경로는 유지한다. true는 [DB 명세](erd.md)의 attempt 스키마가 필요하다. 단계 Outbox 생성·전송은 DEMO_JOBS_ENABLED, 원격 전송은 BTS_ENABLED와 서버 인증 설정도 필요하다.

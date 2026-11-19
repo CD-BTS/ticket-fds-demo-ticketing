@@ -213,7 +213,7 @@ class TicketCheckInMySqlTests {
         assertEquals(List.of("BOOKING","CHECK_IN"),SENT.stream().map(m->m.get("eventType")).toList());
         Map<String,Object> event=SENT.get(1);
         assertEquals(ticket,event.get("ticketId"));assertEquals(booking,event.get("bookingId"));
-        assertTrue(event.get("occurredAt").toString().matches(".*T\\d{2}:\\d{2}:\\d{2}Z"));
+        assertTrue(event.get("occurredAt").toString().matches(".*T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z"));
         Map<?,?> metadata=(Map<?,?>)event.get("metadata");
         assertEquals(Set.of("concertId","performanceStartsAt","performanceEndsAt","deviceChanged"),metadata.keySet());
         assertEquals(false,metadata.get("deviceChanged"));assertEquals(concert,metadata.get("concertId"));

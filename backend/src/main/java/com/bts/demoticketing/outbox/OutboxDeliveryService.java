@@ -1,6 +1,5 @@
 package com.bts.demoticketing.outbox;
 
-import java.time.ZoneOffset;
 import java.util.*;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
@@ -40,7 +39,7 @@ public class OutboxDeliveryService {
                 json.readValue(m.metadata(),Map.class).forEach((key,value)->metadata.put(String.valueOf(key),value));
                 // BTS는 CHECK_IN에 top-level ticketId를 요구한다. 원천 metadata에서 옮겨 싣는다.
                 if(m.eventType().equals("CHECK_IN"))body.put("ticketId",metadata.remove("ticketId"));
-                body.put("occurredAt",m.occurredAt().toInstant(ZoneOffset.UTC).toString());
+                body.put("occurredAt",EventTimes.format(m.occurredAt()));
                 body.put("metadata",metadata);
                 payload=json.writeValueAsString(body);
                 tx.freeze(m,payload);

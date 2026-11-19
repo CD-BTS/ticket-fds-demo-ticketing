@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
   business_transition_id VARCHAR(100) NOT NULL,
   aggregate_id VARCHAR(100) NOT NULL,
   event_type VARCHAR(30) NOT NULL,
-  occurred_at_utc DATETIME NOT NULL,
+  occurred_at_utc DATETIME(3) NOT NULL,
   metadata JSON NOT NULL,
   payload LONGTEXT NULL COMMENT 'Frozen JSON bytes; set once before first delivery',
   delivery_status VARCHAR(20) NOT NULL DEFAULT 'PENDING',

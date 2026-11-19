@@ -4,7 +4,7 @@
 
 Demo는 `demo_ticketing_db`를 사용하며 기본 MySQL 포트는 localhost:3308이다. BTS의 localhost:3307/fairticket_db와 계정·볼륨·스키마를 공유하지 않는다. 테이블은 InnoDB이고 기본 문자 집합·정렬은 utf8mb4/utf8mb4_0900_as_cs다. opaque 식별자와 token hash에는 명시된 ascii/ascii_bin을 사용한다.
 
-DATETIME에는 시간대가 없으므로 애플리케이션과 JDBC에서 UTC 원천으로 읽고 쓴다. 업무 시각은 DATETIME(6), 이벤트 occurred_at은 초 단위다. BTS 전송 occurredAt은 UTC ISO 8601 Z 문자열이며 metadata.recordedAt은 소수 초를 포함할 수 있다.
+DATETIME에는 시간대가 없으므로 애플리케이션과 JDBC에서 UTC 원천으로 읽고 쓴다. 업무 시각은 DATETIME(6), 이벤트 발생 시각(outbox_events.occurred_at_utc, booking_attempt_events.occurred_at)은 DATETIME(3) 밀리초 단위다. BTS 전송 occurredAt은 밀리초까지의 UTC ISO 8601 Z 문자열이며 metadata.recordedAt은 소수 초를 포함할 수 있다.
 
 ## 관계
 
@@ -64,7 +64,7 @@ concert_seats.active_hold_id/active_booking_id는 현재 점유를 가리키고 
 | 테이블 | 컬럼과 제약 |
 |---|---|
 | booking_attempts | attempt_id CHAR(36) ascii_bin PK; user_id/concert_id BIGINT NOT NULL FK; service_id VARCHAR(50); stage VARCHAR(30); status VARCHAR(20); sequence_no BIGINT; hold_id/booking_id nullable BIGINT FK 및 각각 UNIQUE; started_at DATETIME(6); ix_attempt_owner(user_id,concert_id,started_at) |
-| booking_attempt_events | id BIGINT AUTO_INCREMENT PK; attempt_id CHAR(36) ascii_bin FK; transition_id VARCHAR(100) ascii_bin; sequence_no BIGINT; request_fingerprint CHAR(64); metadata JSON; occurred_at DATETIME; outbox_id nullable BIGINT FK; UNIQUE(attempt_id,transition_id), UNIQUE(attempt_id,sequence_no) |
+| booking_attempt_events | id BIGINT AUTO_INCREMENT PK; attempt_id CHAR(36) ascii_bin FK; transition_id VARCHAR(100) ascii_bin; sequence_no BIGINT; request_fingerprint CHAR(64); metadata JSON; occurred_at DATETIME(3); outbox_id nullable BIGINT FK; UNIQUE(attempt_id,transition_id), UNIQUE(attempt_id,sequence_no) |
 
 request_fingerprint는 전이 내용의 SHA-256이다. 동일 transition의 같은 내용은 재사용하고 다른 내용은 충돌한다. sequence는 attempt 행 잠금 안에서 증가한다. outbox_id가 NULL인 journal은 주기 작업에서 Outbox에 연결한다. 업무 확정과 journal 완료는 예약 트랜잭션에서 원자적으로 처리하고 원격 전송은 분리한다.
 
@@ -103,7 +103,9 @@ outbox_events는 id PK와 user_id FK, service_id, external_event_id, business_tr
 
 ## 스키마 적용
 
-Hibernate ddl-auto=none, spring.sql.init.mode=never다. Compose는 새 빈 볼륨에서 schema/seed/02/03을 초기화하며 기존 볼륨을 자동 마이그레이션하지 않는다. [04-booking-attempts.sql](../backend/db/04-booking-attempts.sql)은 MySQL 8.0.16+에서 Demo DB에 한 번만 적용한다. 두 attempt 테이블 생성과 Outbox CHECK 교체를 포함하며 반복 실행용 IF NOT EXISTS 스크립트가 아니다.
+Hibernate ddl-auto=none, spring.sql.init.mode=never다. Compose는 새 빈 볼륨에서 schema/seed/02/03/04를 초기화하며 기존 볼륨을 자동 마이그레이션하지 않는다. [04-booking-attempts.sql](../backend/db/04-booking-attempts.sql)은 MySQL 8.0.16+에서 Demo DB에 한 번만 적용한다. 두 attempt 테이블 생성과 Outbox CHECK 교체를 포함하며 반복 실행용 IF NOT EXISTS 스크립트가 아니다.
+
+[06-event-time-millis.sql](../backend/db/06-event-time-millis.sql)은 02·04가 적용된 기존 DB에만 한 번 적용한다(#44). outbox_events.occurred_at_utc와 booking_attempt_events.occurred_at을 DATETIME(3)로 넓히며 기존 값은 .000으로 유지된다. 새 볼륨은 이미 DATETIME(3)이므로 적용하지 않는다. BTS가 밀리초 occurredAt을 받는 버전(ticket-fds-admin #40)을 먼저 배포한다.
 
 [05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)도 같은 방식으로 한 번만 적용한다. 테이블 두 개를 추가할 뿐 기존 테이블·CHECK를 바꾸지 않으며, 적용 후 CHECKIN_ENABLED를 활성화한다. 절차는 [검표 실행 안내](../backend/scripts/README-TicketCheckIn.md)를 따른다.
 

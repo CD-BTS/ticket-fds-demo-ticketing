@@ -13,6 +13,7 @@ import tools.jackson.databind.json.JsonMapper;
 import com.bts.demoticketing.booking.service.ReservationTransactions;
 import com.bts.demoticketing.common.exception.ApiException;
 import com.bts.demoticketing.common.response.ResponseCode;
+import com.bts.demoticketing.outbox.EventTimes;
 import com.bts.demoticketing.outbox.OutboxRepository;
 import com.bts.demoticketing.ticket.TicketRepository.*;
 import com.bts.demoticketing.user.repository.DemoUserRepository;
@@ -84,7 +85,7 @@ public class CheckInService {
         metadata.put("deviceChanged",binding.generation()>1);
         var owner=users.find(ticket.userId()).orElseThrow();
         outbox.appendCheckIn(owner.id(),owner.serviceId(),ticket.bookingPublicId(),ticket.publicId(),
-                now.truncatedTo(ChronoUnit.SECONDS),json.writeValueAsString(metadata),now);
+                EventTimes.occurredAt(now),json.writeValueAsString(metadata),now);
         return new Result(ticket.publicId(),ticket.title(),ticket.seatCode(),now.atOffset(ZoneOffset.UTC));
     }
 }
