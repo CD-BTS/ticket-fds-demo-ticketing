@@ -14,6 +14,7 @@ public enum ResponseCode {
 	CAPTCHA_REQUIRED(HttpStatus.FORBIDDEN, "CAPTCHA_REQUIRED", "대기열 등록을 위해 CAPTCHA 인증이 필요합니다."),
 	CAPTCHA_INVALID(HttpStatus.FORBIDDEN, "CAPTCHA_INVALID", "CAPTCHA 인증 정보가 올바르지 않거나 만료되었습니다."),
 	QUEUE_RESTRICTED(HttpStatus.FORBIDDEN, "QUEUE_RESTRICTED", "정책에 따라 대기열 등록이 제한되었습니다."),
+	BOOKING_RESTRICTED(HttpStatus.FORBIDDEN, "BOOKING_RESTRICTED", "정책에 따라 예매가 제한되었습니다."),
 	RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "요청한 리소스를 찾을 수 없습니다."),
 	METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "지원하지 않는 요청 메서드입니다."),
 	NOT_ACCEPTABLE(HttpStatus.NOT_ACCEPTABLE, "NOT_ACCEPTABLE", "지원하지 않는 응답 형식입니다."),
