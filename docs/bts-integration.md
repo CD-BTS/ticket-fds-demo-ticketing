@@ -31,7 +31,7 @@ Demo의 UNIQUE(service,external ID)·UNIQUE(BTS UUID)와 BTS의 서비스별 외
 | eventType | BOOKING/CANCEL/CHECK_IN/BOOKING_ATTEMPT |
 | bookingId | BOOKING/CANCEL에서 필수, 최대 100자; BOOKING_ATTEMPT는 top-level에서 생략 |
 | ticketId | CHECK_IN에서 필수, 최대 100자 |
-| occurredAt | offset 포함 ISO 8601, UTC 기준 1000~9999년, 초 단위; Demo는 Z 사용 |
+| occurredAt | offset 포함 ISO 8601, UTC 기준 1000~9999년, 밀리초 단위(밀리초가 0이면 소수 생략); Demo는 Z 사용. BTS가 밀리초를 받는 버전(ticket-fds-admin #40) 이후에 배포 |
 | metadata | JSON object; 일반 이벤트는 null 허용, BOOKING_ATTEMPT는 단계 필드 필수 |
 
 BTS는 `(serviceId,externalEventId)`로 중복을 구분한다. 같은 ID·같은 정규화 내용은 기존 eventId와 200, 신규는 201, 같은 ID·다른 내용은 409다. Demo는 성공 envelope와 eventId, 사용자·서비스·외부 ID·이벤트 타입·bookingId를 검증한 뒤 SENT로 기록한다.
@@ -49,7 +49,7 @@ bookingDurationSeconds는 hold 생성~서버 확정의 0 이상 number다. payme
 
 일반 이벤트의 metadata.bookingDurationSeconds는 제공되면 0 이상 숫자, metadata.deviceChanged는 제공되면 boolean이어야 한다. Feature 원천 전달과 BTS Feature 계산은 별개다. 브라우저 클릭·QR 표시·선점 만료를 BOOKING/CANCEL/CHECK_IN으로 만들어 보내지 않는다.
 
-CHECK_IN은 검표 API가 티켓을 최초로 CHECKED_IN으로 바꾼 트랜잭션에서만 생성한다. 거부된 스캔·중복 스캔·QR 표시는 이벤트가 아니다. occurredAt은 서버 검표 시각(초 단위)이다. Outbox의 aggregate_id는 예매 ID라서 같은 예매의 BOOKING이 SENT된 뒤 전송되고, business_transition_id는 `<ticketId>:CHECK_IN`이라 좌석별로 한 건씩 생성된다. 전송 시 원천 metadata의 ticketId를 top-level로 옮기고 응답의 ticketId도 검증한다. `deviceChanged`는 검표에 쓰인 기기가 최초 등록 기기가 아니면 true다. TOTP 비밀키·서명·QR 원문은 싣지 않는다.
+CHECK_IN은 검표 API가 티켓을 최초로 CHECKED_IN으로 바꾼 트랜잭션에서만 생성한다. 거부된 스캔·중복 스캔·QR 표시는 이벤트가 아니다. occurredAt은 서버 검표 시각(밀리초 단위)이다. Outbox의 aggregate_id는 예매 ID라서 같은 예매의 BOOKING이 SENT된 뒤 전송되고, business_transition_id는 `<ticketId>:CHECK_IN`이라 좌석별로 한 건씩 생성된다. 전송 시 원천 metadata의 ticketId를 top-level로 옮기고 응답의 ticketId도 검증한다. `deviceChanged`는 검표에 쓰인 기기가 최초 등록 기기가 아니면 true다. TOTP 비밀키·서명·QR 원문은 싣지 않는다.
 
 BOOKING_ATTEMPT는 [예매 시도 명세](booking-attempts.md)를 따른다. COMPLETED/SUCCEEDED는 metadata.bookingId로 실제 확정 예매를 연결한다. BOOKING/CANCEL은 top-level bookingId를 유지하고 metadata.attemptId만 추가한다. 기존에 동결된 payload를 소급 수정하지 않는다.
 
@@ -85,7 +85,7 @@ POLICY_DECISION_MODE=bts는 BTS UUID를 확보하고 `POST /api/v1/users/{uuid}/
 
 | 설정 | 기본값 / 의미 |
 |---|---|
-| BOOKING_ATTEMPTS_ENABLED | false; attempt 스키마 적용 후 true |
+| BOOKING_ATTEMPTS_ENABLED | true(기본값); attempt 스키마(04)가 없는 기존 DB는 04 적용 전까지 false |
 | DEMO_JOBS_ENABLED | true; 만료 정리·단계 materialize·Outbox 전송 |
 | BTS_ENABLED | false; false이면 이벤트 원천을 보존하고 네트워크 호출하지 않음 |
 | BTS_BASE_URL | 활성 시 필수; HTTPS, 루프백 테스트만 HTTP 허용 |

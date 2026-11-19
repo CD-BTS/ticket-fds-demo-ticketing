@@ -13,6 +13,7 @@ import com.bts.demoticketing.booking.entity.ReservationRecords.*;
 import com.bts.demoticketing.booking.repository.ReservationRepository;
 import com.bts.demoticketing.common.exception.ApiException;
 import com.bts.demoticketing.common.response.ResponseCode;
+import com.bts.demoticketing.outbox.EventTimes;
 import com.bts.demoticketing.outbox.OutboxRepository;
 import com.bts.demoticketing.user.entity.DemoUser;
 import com.bts.demoticketing.queue.QueueService;
@@ -203,6 +204,6 @@ public class ReservationService {
         return m;
     }
     private void enqueue(DemoUser user,Booking b,String type,Map<String,Object> metadata,LocalDateTime now){
-        outbox.append(user.id(),user.serviceId(),b.publicId(),type,now.truncatedTo(ChronoUnit.SECONDS),json.writeValueAsString(metadata),now);
+        outbox.append(user.id(),user.serviceId(),b.publicId(),type,EventTimes.occurredAt(now),json.writeValueAsString(metadata),now);
     }
 }
