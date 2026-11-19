@@ -81,6 +81,12 @@ POLICY_DECISION_MODE=bts는 BTS UUID를 확보하고 `POST /api/v1/users/{uuid}/
 
 정책 호출 코드와 원격 endpoint 배포는 별개의 조건이다. 배포 대상 BTS가 endpoint를 제공해야 bts 모드를 사용할 수 있다. 원격 장애·알 수 없는 응답은 입장 허용으로 바꾸지 않고 503으로 처리한다. disabled는 ALLOW, mock은 인증된 Demo 공개 ID에 대한 서버 설정을 사용한다. 활성 WAITING/ADMITTED는 정책을 재적용하지 않는다.
 
+좌석 선점(`POST /api/v1/concerts/{concertId}/seat-holds`) 직전에도 같은 API를 `{ "context": "BOOKING_ATTEMPT" }`로 호출한다(#46). CAPTCHA·후순위는 대기열에서 이미 적용했으므로 예매 단계에서는 RESTRICT만 403/BOOKING_RESTRICTED로 거부한다. 사용자는 대기열 정책을 이미 통과했으므로 예매 단계의 원격 장애·알 수 없는 응답은 선점을 허용하고 로그만 남긴다. 호출은 좌석 잠금·DB 트랜잭션 밖에서 한다. disabled/mock 모드는 대기열과 같은 결정을 쓴다.
+
+## 공연 동기화
+
+BTS_ENABLED=true이고 DEMO_JOBS_ENABLED=true이면 기동 직후와 BTS_CONCERT_SYNC_MS(기본 10분)마다 전체 공연을 `PUT /api/v1/concerts/{concertId}`로 보낸다(#46, ticket-fds-admin `docs/concert-integration.md`). concertId는 이벤트 metadata.concertId와 같은 공연 public_id이며, body는 name(title)·venue·startsAt·endsAt(초 단위 UTC ISO 8601)이다. BTS PUT은 멱등이라 재전송해도 중복이 생기지 않는다. 실패는 공연 단위로 격리하고 다음 주기에 재시도하며 이벤트 전송·예매를 막지 않는다. 공연 생성 API가 없으므로 seed·DB 변경은 다음 주기에 반영된다.
+
 ## 설정
 
 | 설정 | 기본값 / 의미 |
@@ -96,7 +102,8 @@ POLICY_DECISION_MODE=bts는 BTS UUID를 확보하고 `POST /api/v1/users/{uuid}/
 | GATE_API_KEY | 활성 시 필수; 16자 이상. 검표 담당자 인증, 런타임 비밀정보 |
 | CHECKIN_OPENS_BEFORE | PT2H; 공연 시작 전 입장 허용 시간 |
 | DEVICE_CHALLENGE_TTL / DEVICE_MAX_CHANGES | PT2M / 3 |
-| POLICY_DECISION_MODE | disabled/mock/bts |
+| POLICY_DECISION_MODE | disabled/mock/bts; bts는 대기열(QUEUE_JOIN)과 좌석 선점(BOOKING_ATTEMPT) 두 시점에 호출 |
+| BTS_CONCERT_SYNC_MS | 600000; 공연 BTS 동기화 주기(ms) |
 | CAPTCHA_MODE | disabled/mock/hcaptcha; hcaptcha는 HCAPTCHA_SITE_KEY·HCAPTCHA_SECRET 필수 |
 | HCAPTCHA_SITE_KEY | hcaptcha 모드에서 필수; 브라우저 위젯에 전달되는 공개 키 |
 | HCAPTCHA_SECRET | hcaptcha 모드에서 필수; 서버 검증용 비밀 키, 런타임 비밀정보 |

@@ -3,6 +3,11 @@ package com.bts.demoticketing.integration.bts;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.net.http.*;
 import java.time.Duration;
 import java.util.*;
@@ -44,9 +49,12 @@ public class BtsClient {
             return id;
         }catch(RuntimeException e){throw new DeliveryFailure("INVALID_BTS_RESPONSE",false);}
     }
-    public PolicyDecisionClient.Action policy(String uuid){
+    public PolicyDecisionClient.Action policy(String uuid){return policy(uuid,"QUEUE_JOIN");}
+    /** context: QUEUE_JOIN(대기열 입장) 또는 BOOKING_ATTEMPT(좌석 선점). BTS는 결정과 문맥을 policy_decision에 기록한다. */
+    public PolicyDecisionClient.Action policy(String uuid,String context){
+        if(!List.of("QUEUE_JOIN","BOOKING_ATTEMPT").contains(context))throw new IllegalArgumentException("Unknown policy context");
         try{UUID.fromString(uuid);}catch(RuntimeException e){throw new DeliveryFailure("INVALID_BTS_USER",false);}
-        Map<?,?> data=post("/api/v1/users/"+uuid+"/policy-decisions",json.writeValueAsString(Map.of("context","QUEUE_JOIN")));
+        Map<?,?> data=post("/api/v1/users/"+uuid+"/policy-decisions",json.writeValueAsString(Map.of("context",context)));
         try{return PolicyDecisionClient.Action.valueOf(String.valueOf(data.get("action")));}
         catch(RuntimeException e){throw new DeliveryFailure("INVALID_BTS_POLICY",false);}
     }
@@ -63,13 +71,26 @@ public class BtsClient {
                 data.get("tier") instanceof String t?t:null,
                 data.get("anomalyScore") instanceof Number a?a.doubleValue():null,action);
     }
-    private Map<?,?> post(String path,String payload){return exchange(path,payload);}
-    private Map<?,?> exchange(String path,String payload){
+    /**
+     * 공연 정보를 BTS에 등록·갱신한다 (PUT /api/v1/concerts/{concertId}, 멱등).
+     * concertId는 이벤트 metadata.concertId와 같은 공연 public_id이고, 시각은 초 단위 UTC ISO 8601이다.
+     */
+    public void upsertConcert(String concertId,String name,LocalDateTime startsAtUtc,LocalDateTime endsAtUtc,String venue){
+        if(concertId==null||!concertId.matches("\\S{1,50}"))throw new DeliveryFailure("INVALID_CONCERT_ID",false);
+        String body=json.writeValueAsString(Map.of("name",name,"venue",venue,
+                "startsAt",startsAtUtc.toInstant(ZoneOffset.UTC).truncatedTo(ChronoUnit.SECONDS).toString(),
+                "endsAt",endsAtUtc.toInstant(ZoneOffset.UTC).truncatedTo(ChronoUnit.SECONDS).toString()));
+        Map<?,?> data=exchange("PUT","/api/v1/concerts/"+URLEncoder.encode(concertId,StandardCharsets.UTF_8),body);
+        if(!concertId.equals(data.get("concertId")))throw new DeliveryFailure("INVALID_BTS_RESPONSE",false);
+    }
+    private Map<?,?> post(String path,String payload){return exchange("POST",path,payload);}
+    private Map<?,?> exchange(String path,String payload){return exchange(payload==null?"GET":"POST",path,payload);}
+    private Map<?,?> exchange(String method,String path,String payload){
         if(!settings.enabled)throw new DeliveryFailure("BTS_DISABLED",true);
         HttpRequest.Builder builder=HttpRequest.newBuilder(URI.create(settings.baseUrl.replaceAll("/+$","")+path))
                 .timeout(Duration.ofSeconds(3)).header("X-API-Key",settings.apiKey);
         HttpRequest request=(payload==null?builder.GET()
-                :builder.header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(payload))).build();
+                :builder.header("Content-Type","application/json").method(method,HttpRequest.BodyPublishers.ofString(payload))).build();
         HttpResponse<String> response;
         try{response=http.send(request,HttpResponse.BodyHandlers.ofString());}
         catch(InterruptedException e){Thread.currentThread().interrupt();throw new DeliveryFailure("BTS_INTERRUPTED",true);}

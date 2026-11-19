@@ -33,6 +33,7 @@ public class Concert {
     public String getArtist() { return artist; }
     public String getVenue() { return venue; }
     public LocalDateTime getStartAt() { return startAt; }
+    public LocalDateTime getEndAt() { return endAt; }
     public long getPriceFrom() { return priceFrom; }
     public String getTagline() { return tagline; }
     public int getHue() { return hue; }
