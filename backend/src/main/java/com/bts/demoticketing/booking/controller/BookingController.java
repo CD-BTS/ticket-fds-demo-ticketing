@@ -8,6 +8,7 @@ import jakarta.validation.constraints.*;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import com.bts.demoticketing.booking.dto.BookingDtos.*;
+import com.bts.demoticketing.booking.policy.BookingPolicyGuard;
 import com.bts.demoticketing.booking.service.ReservationService;
 import com.bts.demoticketing.common.exception.ApiException;
 import com.bts.demoticketing.common.response.*;
@@ -18,11 +19,15 @@ import com.bts.demoticketing.user.service.DemoAuthService;
 public class BookingController {
     private final DemoAuthService auth;
     private final ReservationService reservations;
-    public BookingController(DemoAuthService auth,ReservationService reservations){this.auth=auth;this.reservations=reservations;}
+    private final BookingPolicyGuard bookingPolicy;
+    public BookingController(DemoAuthService auth,ReservationService reservations,BookingPolicyGuard bookingPolicy){
+        this.auth=auth;this.reservations=reservations;this.bookingPolicy=bookingPolicy;
+    }
     @PostMapping("/concerts/{concertId}/seat-holds")
     public ResponseEntity<ApiResponse<HoldResponse>> hold(@PathVariable @NotBlank @Size(max=50) String concertId,
             @Valid @RequestBody HoldRequest body,HttpServletRequest request){
         var user=auth.require(request);
+        bookingPolicy.check(user); // BTS 호출은 좌석 잠금·트랜잭션 밖에서 한다
         HoldResponse hold=reservations.hold(concertId,user,body.seatIds(),body.attemptId(),body.transitionId());
         return ResponseEntity.status(201).body(ApiResponse.success(ResponseCode.CREATED,hold));
     }

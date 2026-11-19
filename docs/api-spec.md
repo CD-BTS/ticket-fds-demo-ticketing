@@ -52,7 +52,7 @@ POLICY_DECISION_MODE는 disabled(ALLOW), mock(서버 설정), bts(원격 정책 
 
 | API | 요청 | 성공 |
 |---|---|---|
-| POST /api/v1/concerts/{concertId}/seat-holds | seatIds, 선택 attemptId/transitionId | 201; HoldResponse |
+| POST /api/v1/concerts/{concertId}/seat-holds | seatIds, 선택 attemptId/transitionId | 201; HoldResponse. BTS 정책이 RESTRICT면 403/BOOKING_RESTRICTED |
 | GET /api/v1/seat-holds/{holdId} | 없음 | 200; HoldResponse |
 | DELETE /api/v1/seat-holds/{holdId} | 없음 | 200; data=null |
 | POST /api/v1/bookings | holdId,paymentIdentifier | 신규 201, 재확정 200; BookingResponse |
