@@ -15,6 +15,7 @@ import tools.jackson.databind.json.JsonMapper;
 import com.bts.demoticketing.user.entity.DemoUser;
 import com.bts.demoticketing.common.exception.ApiException;
 import com.bts.demoticketing.common.response.ResponseCode;
+import com.bts.demoticketing.outbox.EventTimes;
 import com.bts.demoticketing.outbox.OutboxRepository;
 
 /** Local durable journal. No remote I/O occurs on the reservation path. */
@@ -163,7 +164,7 @@ public class AttemptService {
         jdbc.update("""
             INSERT INTO booking_attempt_events(attempt_id,transition_id,sequence_no,request_fingerprint,metadata,occurred_at)
             VALUES(?,?,?,?,?,?)
-            """,id,transition,sequence,signature,metadata,at.truncatedTo(ChronoUnit.SECONDS));
+            """,id,transition,sequence,signature,metadata,EventTimes.occurredAt(at));
         jdbc.update("UPDATE booking_attempts SET stage=?,status=?,sequence_no=? WHERE attempt_id=?",stage,status,sequence,id);
     }
     private boolean replayed(String id,String transition,String stage,String status,String source,Map<String,Object> extra){

@@ -28,7 +28,7 @@ CREATE TABLE booking_attempt_events (
   sequence_no BIGINT NOT NULL,
   request_fingerprint CHAR(64) NOT NULL,
   metadata JSON NOT NULL,
-  occurred_at DATETIME NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
   outbox_id BIGINT NULL,
   CONSTRAINT fk_attempt_event FOREIGN KEY (attempt_id) REFERENCES booking_attempts(attempt_id),
   CONSTRAINT fk_attempt_outbox FOREIGN KEY (outbox_id) REFERENCES outbox_events(id),

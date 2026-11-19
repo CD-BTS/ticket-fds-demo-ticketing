@@ -313,7 +313,7 @@ class ReservationMySqlTests {
         assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM outbox_events WHERE aggregate_id=? AND delivery_status='SENT'",Integer.class,b.id()));
         assertNotNull(users.find(alice.id()).orElseThrow().btsUserId());
         var request=json.readValue(BTS.bodies.get(0),Map.class);
-        assertTrue(request.get("occurredAt").toString().matches(".*T\\d{2}:\\d{2}:\\d{2}Z"));
+        assertTrue(request.get("occurredAt").toString().matches(".*T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z"));
         Map<?,?> meta=(Map<?,?>)request.get("metadata");
         assertEquals("test-pay-shared-01",meta.get("paymentIdentifier"));assertEquals("192.0.2.10",meta.get("ipAddress"));
         assertEquals(1,((List<?>)meta.get("ticketIds")).size());
@@ -395,7 +395,7 @@ class ReservationMySqlTests {
                 }
                 bodies.add(raw);
                 if(!users.containsValue(body.get("userId"))){reply(exchange,404,"USER_NOT_FOUND",null);return;}
-                if(!List.of("BOOKING","CANCEL","CHECK_IN").contains(body.get("eventType"))||!body.get("occurredAt").toString().matches(".*T\\d{2}:\\d{2}:\\d{2}Z")){
+                if(!List.of("BOOKING","CANCEL","CHECK_IN").contains(body.get("eventType"))||!body.get("occurredAt").toString().matches(".*T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z")){
                     reply(exchange,400,"INVALID_REQUEST",null);return;
                 }
                 if(mode.get().equals("CONFLICT")){reply(exchange,409,"DATA_CONFLICT",null);return;}
