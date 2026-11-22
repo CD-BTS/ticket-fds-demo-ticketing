@@ -165,6 +165,7 @@ class TicketCheckInMySqlTests {
     private interface Work{void run()throws Exception;}
     private String code(Work work){return assertThrows(ApiException.class,work::run).getResponseCode().getCode();}
     private String ticketStatus(String ticket){return jdbc.queryForObject("SELECT status FROM admission_tickets WHERE public_id=?",String.class,ticket);}
+    private LocalDateTime checkedInAt(String ticket){return jdbc.queryForObject("SELECT checked_in_at FROM admission_tickets WHERE public_id=?",LocalDateTime.class,ticket);}
     private long checkInEvents(){return jdbc.queryForObject("SELECT COUNT(*) FROM outbox_events WHERE user_id=? AND event_type='CHECK_IN'",Long.class,alice.id());}
     private Map<String,Object> data(String body){
         return json.convertValue(json.readValue(body,new TypeReference<Map<String,Object>>() {}).get("data"),new TypeReference<Map<String,Object>>() {});
@@ -244,10 +245,18 @@ class TicketCheckInMySqlTests {
         Map<String,Object> answer=Map.of("checkInId",checkInId,"proof",phone.checkInProof(ticket,checkInId,nonce));
         send(proofPath,null,answer,401,"UNAUTHORIZED");
         send(proofPath,bobToken,answer,403,"FORBIDDEN");
-        assertEquals("ISSUED",ticketStatus(ticket));
+        // 스캔·거부된 응답까지는 입장 시각이 기록되지 않는다.
+        assertEquals("ISSUED",ticketStatus(ticket));assertNull(checkedInAt(ticket));
         var admitted=data(send(proofPath,aliceToken,answer,200,"COMMON_200"));
         assertEquals(ticket,admitted.get("ticketId"));assertEquals("A-01",admitted.get("seatId"));
         assertEquals("CHECKED_IN",ticketStatus(ticket));
+        // checked_in_at은 확정 시각(서버 시계)이며 응답·Outbox 발생 시각과 같은 순간이다.
+        LocalDateTime confirmedAt=LocalDateTime.ofInstant(TEST_NOW,ZoneOffset.UTC);
+        assertEquals(confirmedAt,checkedInAt(ticket));
+        assertEquals(TEST_NOW,OffsetDateTime.parse(admitted.get("checkedInAt").toString()).toInstant());
+        assertEquals(confirmedAt.truncatedTo(java.time.temporal.ChronoUnit.MILLIS),jdbc.queryForObject(
+                "SELECT occurred_at_utc FROM outbox_events WHERE user_id=? AND event_type='CHECK_IN'",LocalDateTime.class,alice.id()));
+        assertNull(checkedInAt(ticketIds.get(1)),"the other seat of the same booking is untouched");
         mvc.perform(get("/api/v1/check-ins/"+checkInId).header("X-Gate-Key","integration-gate-key")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("COMPLETED")).andExpect(jsonPath("$.data.checkedInAt").exists());
         mvc.perform(get(challengePath).header("Authorization","Bearer "+aliceToken)).andExpect(status().isOk()).andExpect(jsonPath("$.data").doesNotExist());
@@ -459,11 +468,18 @@ class TicketCheckInMySqlTests {
         var third=checkIns.scan(phone.qr(ticket));
         assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,third.checkInId(),captured.substring(captured.lastIndexOf('.')+1))));
         assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,UUID.randomUUID().toString(),"not base64!")));
-        assertEquals("ISSUED",ticketStatus(ticket));assertEquals(0,checkInEvents());
+        assertEquals("ISSUED",ticketStatus(ticket));assertNull(checkedInAt(ticket));assertEquals(0,checkInEvents());
 
         // 실패·만료 후에도 등록 기기는 새로 스캔해 정상 입장할 수 있다.
         assertEquals(ticket,phone.admit(ticket).ticketId());
         assertEquals("CHECKED_IN",ticketStatus(ticket));assertEquals(1,checkInEvents());
+        LocalDateTime first=checkedInAt(ticket);
+        assertNotNull(first);
+        // 중복 검표 시도는 최초 입장 시각을 바꾸지 않는다.
+        clock.advance(Duration.ofSeconds(5));
+        assertEquals("TICKET_ALREADY_CHECKED_IN",code(()->checkIns.scan(phone.qr(ticket))));
+        assertEquals(first,checkedInAt(ticket));assertEquals(1,checkInEvents());
+        clock.advance(Duration.ofSeconds(-5));
         assertEquals("TICKET_ALREADY_CHECKED_IN",code(()->checkIns.scan(captured)));
     }
 

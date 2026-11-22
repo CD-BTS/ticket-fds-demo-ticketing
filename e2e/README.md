@@ -1,4 +1,4 @@
-# Demo–BTS 실서버 통합 시나리오 (#47)
+# Demo–BTS 실서버 통합 시나리오 (#47, #53)
 
 Demo(ticket-fds-demo-ticketing)와 BTS(ticket-fds-admin)를 실제 MySQL·Redis로 함께 띄우고, Demo HTTP API로 행동을 만든 뒤 **두 DB를 직접 조회해** 연동 결과를 검증합니다.
 
@@ -30,6 +30,10 @@ cd e2e
 - **로그:** `e2e/.run/bts.log`, `e2e/.run/demo.log`
 - **BTS DB URL:** admin README의 URL(`serverTimezone=Asia/Seoul`)을 그대로 씁니다. 결과 문서의 발견 사항 3을 참고하세요.
 - **Demo 설정:** `POLICY_DECISION_MODE=bts`, `CAPTCHA_MODE=disabled`, `BOOKING_ATTEMPTS_ENABLED=true`, `BTS_CONCERT_SYNC_MS=60000`
+- **검표 설정 (#53):** `CHECKIN_ENABLED=true`. e2e Demo DB에는 05(기기 바인딩)·07(검표 챌린지) 스크립트도 적용됩니다.
+  - 검표 담당자 키와 TOTP 비밀키 암호화 키도 실행할 때마다 새로 만들어 `e2e/.run/keys.json`에만 둡니다.
+  - seed 공연이 미래 날짜라 `CHECKIN_OPENS_BEFORE=P365D`로 입장 가능 시간을 넓힙니다.
+  - 챌린지 만료를 빨리 확인하려고 `CHECKIN_CHALLENGE_TTL=PT6S`를 씁니다(기본값은 15초).
 
 ## 시나리오
 | 이름 (`-Only`) | 검증 내용 |
@@ -42,6 +46,12 @@ cd e2e
 | `replay` | 같은 이벤트를 다시 보내면 200이고 저장 건수는 그대로. 같은 ID에 다른 내용이면 409 |
 | `concurrency` | 8명이 같은 좌석을 동시에 선점<br>· 1명만 201, 나머지 409<br>· 모든 이벤트가 BTS에 1회씩 저장<br>· 실패한 7건이 SEAT_HOLD/REJECTED로 기록 |
 
+| `checkin` | 예매 → 기기 등록 → QR 생성 → 스캔 → 챌린지 서명 → 입장 확정 후 다음을 확인<br>· 잘못된 QR·만료된 TOTP·미등록 기기 서명·만료/재사용 챌린지·중복 검표 거부, 실패 시 티켓 상태 불변<br>· 티켓 `CHECKED_IN`, `checked_in_at` 기록<br>· Outbox `CHECK_IN`이 스케줄러로 전송돼 SENT<br>· BTS `behavior_event` 저장, 사용자·티켓·예매·공연·발생 시각 매핑<br>· 재전송 시 중복 저장 없음<br>· 관리자·서비스 API의 CHECK_IN 조회와 프론트엔드 타입 일치 |
+
+`checkin` 시나리오는 스크립트가 브라우저 기기 역할을 합니다. ECDSA P-256 키를 만들고 실제 API로 등록한 뒤 QR과 챌린지 응답에 직접 서명합니다(`E2E-Common.ps1`). 서버의 인증·서명 검증은 우회하지 않습니다.
+
 `restrict` 시나리오는 실제 AI 점수 대신 BTS DB에 직접 위험도를 넣습니다(`credit_score=10`, `anomaly_score=0.93`). ticket-fds-admin#40의 AI 추론 연동이 끝나면 이 부분을 실제 점수로 바꿔야 합니다.
 
-결과와 발견 사항: [docs/e2e-result-2026-11-19.md](../docs/e2e-result-2026-11-19.md)
+결과와 발견 사항:
+- [docs/e2e-result-2026-11-19.md](../docs/e2e-result-2026-11-19.md) (#47)
+- [docs/checkin-e2e-result-2026-11-22.md](../docs/checkin-e2e-result-2026-11-22.md) (#53 QR 검표·관람 이벤트 연동)

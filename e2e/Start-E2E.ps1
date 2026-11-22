@@ -36,11 +36,18 @@ $keyFile = Join-Path $run 'keys.json'
 if ($Only -ne 'all' -and (Test-Path $keyFile)) {
     $keys = Get-Content -Raw $keyFile | ConvertFrom-Json
     $serviceKey = $keys.serviceKey; $adminKey = $keys.adminKey
+    $gateKey = $keys.gateKey; $ticketSecret = $keys.ticketSecret
 } else {
     $serviceKey = 'e2e-svc-' + (New-TestKey)
     $adminKey = 'e2e-admin-' + (New-TestKey)
+    # #53 검표: 검표 담당자 키와 TOTP 비밀키 암호화 키(32바이트)도 실행마다 새로 만든다.
+    $gateKey = 'e2e-gate-' + (New-TestKey)
+    $secretBytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($secretBytes)
+    $ticketSecret = [Convert]::ToBase64String($secretBytes)
     $keys = [ordered]@{
         serviceId = 'demo-ticketing'; serviceKey = $serviceKey; adminKey = $adminKey
+        gateKey = $gateKey; ticketSecret = $ticketSecret
         btsUrl = "http://localhost:$BtsPort"; demoUrl = "http://localhost:$DemoPort"
     }
     $keys | ConvertTo-Json | Set-Content -Encoding UTF8 $keyFile
@@ -58,7 +65,10 @@ $btsEnv = @{
 $demoEnv = @{
     SERVER_PORT = "$DemoPort"; DB_HOST = '127.0.0.1'; DB_PORT = '3318'; DB_USERNAME = 'demo_e2e'; DB_PASSWORD = 'demo-e2e-only'
     REDIS_HOST = '127.0.0.1'; REDIS_PORT = '6390'; QUEUE_KEY_PREFIX = 'e2e:queue'
-    BOOKING_ATTEMPTS_ENABLED = 'true'; DEMO_JOBS_ENABLED = 'true'; CHECKIN_ENABLED = 'false'
+    BOOKING_ATTEMPTS_ENABLED = 'true'; DEMO_JOBS_ENABLED = 'true'
+    # seed 공연은 미래 날짜라 입장 가능 시간을 넓힌다. 챌린지 TTL은 만료 시나리오를 빨리 확인하려고 줄인다(기본 15초).
+    CHECKIN_ENABLED = 'true'; TICKET_SECRET_KEY = $ticketSecret; GATE_API_KEY = $gateKey
+    CHECKIN_OPENS_BEFORE = 'P365D'; CHECKIN_CHALLENGE_TTL = 'PT6S'
     BTS_ENABLED = 'true'; BTS_BASE_URL = "http://localhost:$BtsPort"; BTS_SERVICE_ID = 'demo-ticketing'; BTS_API_KEY = $serviceKey
     BTS_CONCERT_SYNC_MS = '60000'; POLICY_DECISION_MODE = 'bts'; CAPTCHA_MODE = 'disabled'
 }
