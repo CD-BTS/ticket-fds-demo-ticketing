@@ -44,6 +44,8 @@ public enum ResponseCode {
 	QR_REJECTED(HttpStatus.FORBIDDEN, "QR_REJECTED", "유효하지 않은 QR입니다."),
 	QR_EXPIRED(HttpStatus.FORBIDDEN, "QR_EXPIRED", "만료된 QR입니다. 최신 QR을 다시 제시해 주세요."),
 	CHECKIN_NOT_OPEN(HttpStatus.FORBIDDEN, "CHECKIN_NOT_OPEN", "입장 가능 시간이 아닙니다."),
+	CHECKIN_NOT_FOUND(HttpStatus.NOT_FOUND, "CHECKIN_NOT_FOUND", "검표 요청을 찾을 수 없습니다."),
+	CHECKIN_PROOF_INVALID(HttpStatus.FORBIDDEN, "CHECKIN_PROOF_INVALID", "검표 확인이 올바르지 않거나 만료되었습니다. QR을 다시 스캔해 주세요."),
 	REQUEST_FAILED(HttpStatus.BAD_REQUEST, "REQUEST_FAILED", "요청을 처리할 수 없습니다.");
 
 	private final HttpStatus status;

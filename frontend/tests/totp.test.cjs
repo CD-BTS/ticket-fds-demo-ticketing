@@ -55,3 +55,24 @@ test('registration and change proofs are distinct and bind ticket, challenge and
   assert.equal(register, 'BTS-DEVICE-REGISTER.t.c.k')
   assert.equal(api.proofMessage(true, 't', 'c', 'k'), 'BTS-DEVICE-CHANGE.t.c.k')
 })
+
+test('check-in proof binds purpose, ticket, device, scan and challenge, and differs from the QR signature', async () => {
+  assert.equal(api.checkInMessage('t', 'd', 'c', 'n'), 'BTS-CHECKIN.t.d.c.n')
+  const pair = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify'])
+  const totpKey = await hmacKey(Buffer.from('12345678901234567890'))
+  const device = { ticketId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222', signKey: pair.privateKey, totpKey }
+  const verify = (signature, message) =>
+    webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pair.publicKey, Buffer.from(signature, 'base64url'), Buffer.from(message))
+  const message = api.checkInMessage(device.ticketId, device.deviceId, 'scan-1', 'nonce-1')
+  const proof = await api.signText(device.signKey, message)
+  assert.equal(await verify(proof, message), true)
+  // 다른 스캔·다른 챌린지에는 같은 서명을 쓸 수 없다.
+  assert.equal(await verify(proof, api.checkInMessage(device.ticketId, device.deviceId, 'scan-2', 'nonce-1')), false)
+  assert.equal(await verify(proof, api.checkInMessage(device.ticketId, device.deviceId, 'scan-1', 'nonce-2')), false)
+  // 캡처한 QR에 들어 있는 서명은 챌린지 응답으로 쓸 수 없다.
+  const qr = await api.buildQr(device, 1111111109)
+  assert.equal(await verify(qr.split('.')[5], message), false)
+  // 다른 기기의 키로 만든 응답은 등록된 공개키로 검증되지 않는다.
+  const other = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify'])
+  assert.equal(await verify(await api.signText(other.privateKey, message), message), false)
+})

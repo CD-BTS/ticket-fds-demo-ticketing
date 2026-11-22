@@ -80,7 +80,7 @@ AttemptSnapshot은 `{attemptId,concertId,stage,status,sequence,holdId,bookingId}
 
 ## 티켓과 동적 QR
 
-예매 좌석 1개가 티켓 1장(`admission_tickets`)이다. 티켓마다 활성 기기를 1대 등록하고, 등록된 기기가 30초마다 QR을 직접 만든다. 서버는 QR을 발급하지 않는다. CHECKIN_ENABLED=false이면 아래 API는 모두 503/SERVICE_UNAVAILABLE이며 기존 예매·취소는 영향이 없다.
+예매 좌석 1개가 티켓 1장(`admission_tickets`)이다. 티켓마다 활성 기기를 1대 등록하고, 등록된 기기가 30초마다 QR을 직접 만든다. 서버는 QR을 발급하지 않는다. 검표는 QR 스캔 뒤 등록 기기가 서버 챌린지에 개인키로 서명해야 확정된다. CHECKIN_ENABLED=false이면 아래 API는 모두 503/SERVICE_UNAVAILABLE이며 기존 예매·취소는 영향이 없다.
 
 | API | 인증 | 요청 | 성공 |
 |---|---|---|---|
@@ -88,7 +88,10 @@ AttemptSnapshot은 `{attemptId,concertId,stage,status,sequence,holdId,bookingId}
 | POST /api/v1/tickets/{ticketId}/device-challenges | Bearer, 티켓 소유자 | body 없음 또는 `{}` | 201; `{challengeId,challenge,expiresAt}` |
 | POST /api/v1/tickets/{ticketId}/device | Bearer, 티켓 소유자 | `{challengeId,publicKey,proof}` | 201; Enrollment (최초 등록) |
 | POST /api/v1/tickets/{ticketId}/device/change | Bearer, 티켓 소유자 | `{challengeId,publicKey,proof}` | 200; Enrollment (기기 변경) |
-| POST /api/v1/check-ins | X-Gate-Key | `{qr}` | 200; `{ticketId,concertTitle,seatId,checkedInAt}` |
+| POST /api/v1/check-ins | X-Gate-Key | `{qr}` | 201; CheckInScan (status=PENDING, 입장 미확정) |
+| GET /api/v1/check-ins/{checkInId} | X-Gate-Key | 없음 | 200; CheckInScan |
+| GET /api/v1/tickets/{ticketId}/check-in-challenge | Bearer, 티켓 소유자 | 없음 | 200; CheckInChallenge 또는 대기 중인 챌린지가 없으면 null |
+| POST /api/v1/tickets/{ticketId}/check-in-proofs | Bearer, 티켓 소유자 | `{checkInId,proof}` | 200; CheckInResult (입장 확정) |
 
 - Ticket: `{ticketId,seatId,status,checkedInAt,device}`. status는 ISSUED/CHECKED_IN/CANCELLED. device는 `{deviceId,registeredAt,changesRemaining}` 또는 미등록이면 null이다. 공개키·비밀키는 조회 응답에 없다.
 - Enrollment: `{ticketId,deviceId,totp:{secret,algorithm:"SHA1",digits:6,period:30},registeredAt,serverTime,changesRemaining}`. `totp.secret`(20바이트의 base64url)은 이 응답에서 한 번만 전달되며 다시 조회할 수 없다. `serverTime`은 기기 시계 보정용이다.
@@ -107,35 +110,64 @@ AttemptSnapshot은 `{attemptId,concertId,stage,status,sequence,holdId,bookingId}
 
 ### QR 형식과 검표
 
-QR 내용은 `BTS1.<ticketId>.<deviceId>.<epochSeconds>.<totp>.<signature>`다. totp는 RFC 6238(HMAC-SHA1, 6자리, 30초), signature는 앞 다섯 필드 문자열에 대한 기기 개인키 서명이다. 검표기는 내용을 해석하지 않고 그대로 `qr`에 담아 보낸다. `X-Gate-Key`는 서버 설정 GATE_API_KEY와 일치해야 하며 Demo 사용자 세션은 검표 권한이 아니다.
+QR 내용은 `BTS1.<ticketId>.<deviceId>.<epochSeconds>.<totp>.<signature>`다. totp는 RFC 6238(HMAC-SHA1, 6자리, 30초), signature는 앞 다섯 필드 문자열에 대한 기기 개인키 서명이다. QR은 등록 기기가 30초마다 직접 만들며 QR 생성·갱신에는 서버 호출이 없다. 검표기는 내용을 해석하지 않고 그대로 `qr`에 담아 보낸다. `X-Gate-Key`는 서버 설정 GATE_API_KEY와 일치해야 하며 Demo 사용자 세션은 검표 권한이 아니다.
 
-서버는 예매 행을 잠근 뒤 순서대로 검증한다: 활성 바인딩의 deviceId 일치 → 기기 서명 → `epochSeconds`가 서버 시각 기준 ±1 step → TOTP 일치 → 티켓 ISSUED·예매 CONFIRMED → 입장 가능 시간(예매 snapshot의 공연 시작 − CHECKIN_OPENS_BEFORE 이상, 공연 종료 미만). 통과하면 `status='ISSUED'` 조건부 UPDATE로 CHECKED_IN 전환과 CHECK_IN Outbox 저장을 한 트랜잭션에서 수행한다. 동시에 여러 검표기가 같은 QR을 보내도 한 건만 성공한다.
+QR 속 서명은 "등록 기기가 그 시각에 이 QR을 만들었다"는 것만 증명한다. 캡처해 다른 사람에게 보낸 QR도 유효 시간 안에는 같은 값이므로, 검표는 **스캔 시점에 등록 기기가 개인키를 갖고 있는지**를 따로 확인하는 2단계로 진행한다.
+
+| 단계 | 호출 | 동작 |
+|---|---|---|
+| 1. 스캔 | 검표기 `POST /check-ins` | QR 검증 후 일회성 챌린지를 발급한다. **입장 처리는 하지 않는다.** 응답 status는 PENDING |
+| 2. 챌린지 수신 | 등록 기기 `GET /tickets/{ticketId}/check-in-challenge` | QR 화면이 열려 있는 동안 약 1초 간격으로 조회한다. 관객 조작은 없다 |
+| 3. 응답 | 등록 기기 `POST /tickets/{ticketId}/check-in-proofs` | `BTS-CHECKIN.<ticketId>.<deviceId>.<checkInId>.<challenge>` 문자열(UTF-8)에 기기 개인키로 서명(SHA-256, r‖s 64바이트의 base64url)해 `proof`로 보낸다 |
+| 4. 확정 | 서버 | 등록된 공개키로 서명을 검증하고 성공했을 때만 CHECKED_IN 전환과 CHECK_IN Outbox 저장을 한 트랜잭션에서 수행한다 |
+| 5. 결과 | 검표기 `GET /check-ins/{checkInId}` | status가 PENDING이 아닐 때까지 조회해 화면에 표시한다 |
+
+- CheckInScan: `{checkInId,status,ticketId,concertTitle,seatId,expiresAt,checkedInAt}`. 챌린지 값은 검표기에 내려가지 않는다. checkedInAt은 COMPLETED일 때만 있다.
+- CheckInChallenge: `{checkInId,deviceId,challenge,expiresAt}`. deviceId는 QR이 스캔된 활성 기기이며, 다른 기기는 응답하지 않는다.
+- CheckInResult: `{ticketId,concertTitle,seatId,checkedInAt}`.
+
+스캔 시 서버는 예매 행을 잠근 뒤 순서대로 검증한다: 활성 바인딩의 deviceId 일치 → 기기 서명 → `epochSeconds`가 서버 시각 기준 ±1 step → TOTP 일치 → 티켓 ISSUED·예매 CONFIRMED → 입장 가능 시간(예매 snapshot의 공연 시작 − CHECKIN_OPENS_BEFORE 이상, 공연 종료 미만). 통과하면 32바이트 난수 챌린지를 만든다.
+
+챌린지 규칙:
+
+- 유효 시간은 CHECKIN_CHALLENGE_TTL(기본 15초)이다. 지나면 올바른 서명도 거부되고 검표기에는 EXPIRED로 보인다.
+- 일회성이다. 서명 검증에 성공하면 COMPLETED, 잘못된 서명·확정 시점에 사용할 수 없게 된 티켓이면 REJECTED로 소비되며 같은 챌린지로는 다시 시도할 수 없다.
+- 티켓당 미완료 챌린지는 1개다. 같은 티켓을 다시 스캔하면 이전 챌린지는 SUPERSEDED가 되고 새 챌린지만 유효하다. 여러 검표기가 동시에 스캔해도 유효한 챌린지는 하나다.
+- 챌린지는 스캔된 기기 바인딩에 묶인다. 스캔 후 기기를 변경하면 이전·새 기기 모두 그 챌린지에 응답할 수 없다.
+- 확정 시점에도 예매 행을 잠그고 티켓 상태·입장 시간을 다시 확인하며 `status='ISSUED'` 조건부 UPDATE로 한 번만 전환한다. 같은 응답이 동시에 여러 번 와도 한 건만 성공한다.
+- 만료·실패 후에는 QR을 다시 스캔하면 새 챌린지로 재시도된다. 유효 시간 안의 같은 QR도 다시 스캔할 수 있다(QR 자체는 입장 권한이 아니다).
 
 | 결과 | 응답 |
 |---|---|
-| 형식 오류 | 400 / QR_INVALID |
+| 스캔: 형식 오류 | 400 / QR_INVALID |
 | 검표 담당자 키 없음·불일치 | 401 / UNAUTHORIZED |
-| 폐기된·다른 기기, 서명 불일치, TOTP 불일치 | 403 / QR_REJECTED |
-| 시각이 허용 범위 밖 | 403 / QR_EXPIRED |
-| 입장 가능 시간 아님 | 403 / CHECKIN_NOT_OPEN |
+| 스캔: 폐기된·다른 기기, 서명 불일치, TOTP 불일치 | 403 / QR_REJECTED |
+| 스캔: 시각이 허용 범위 밖 | 403 / QR_EXPIRED |
+| 스캔·응답: 입장 가능 시간 아님 | 403 / CHECKIN_NOT_OPEN |
+| 응답: 만료·소비·대체·다른 티켓의 챌린지, 잘못된 서명, 스캔 후 기기 변경 | 403 / CHECKIN_PROOF_INVALID |
+| 챌린지 조회·응답: 티켓 소유자가 아님 | 403 / FORBIDDEN |
 | 없는 티켓 | 404 / TICKET_NOT_FOUND |
-| 이미 입장 | 409 / TICKET_ALREADY_CHECKED_IN |
-| 취소된 예매·티켓 | 409 / TICKET_NOT_ADMITTABLE |
+| 결과 조회: 없는 checkInId | 404 / CHECKIN_NOT_FOUND |
+| 스캔·응답: 이미 입장 | 409 / TICKET_ALREADY_CHECKED_IN |
+| 스캔·응답: 취소된 예매·티켓 | 409 / TICKET_NOT_ADMITTABLE |
 
 ### 보안 한계
 
 - TOTP 비밀키만 복사해서는 QR을 만들 수 없다. 서버는 활성 바인딩의 공개키에 대응하는 개인키 서명을 요구한다.
-- **캡처한 QR을 유효 시간(최대 약 90초) 안에 다른 사람이 먼저 제시하는 공격은 막지 못한다.** 서버는 그 QR이 등록 기기에서 만들어졌다는 것만 확인할 수 있고 누가 제시했는지는 알 수 없다. 최초 1회만 성공하므로 정당한 소유자는 이후 TICKET_ALREADY_CHECKED_IN을 받는다. 완전한 방지는 검표기 발급 챌린지에 기기가 현장에서 응답하는 방식 등이 필요하며 이번 범위가 아니다.
-- non-extractable 키는 키 원문 유출만 막는다. XSS나 같은 브라우저 프로필에 접근한 공격자는 키를 "사용"해 QR을 만들 수 있다. 하드웨어 증명(attestation)이 없어 "기기"는 사실상 "브라우저 프로필"이다.
-- Demo 로그인은 ID 입력만으로 세션을 발급하므로 ID를 아는 사람은 기기 변경을 호출할 수 있다. 변경 횟수 제한과 `deviceChanged` 이벤트 필드로 흔적만 남긴다.
+- 캡처한 QR만 전달받은 사람은 입장할 수 없다. 스캔은 통과해도 챌린지에 서명할 개인키가 없어 검표가 확정되지 않는다.
+- **챌린지 응답은 자동이며 "개인키를 지금 갖고 있다"는 것만 증명한다. 기기가 검표기 앞에 있다는 것은 증명하지 않는다.** 판매자가 QR 화면을 켜 둔 채 구매자가 캡처본을 제시하면(실시간 공모), 또는 줄 서 있는 관객의 QR을 몰래 촬영해 먼저 제시하면 등록 기기가 자동으로 응답해 입장이 확정된다. 이번 범위에서는 방어하지 않는다. 방어하려면 검표기 표시 코드를 관객이 확인·입력하게 하거나 NFC/BLE 등 근접 통신이 필요하다.
+- 입장 시 등록 기기가 온라인이어야 한다. 네트워크가 안 되는 기기는 챌린지를 받을 수 없어 EXPIRED가 되며, 이를 대신할 오프라인 검표 경로는 없다.
+- 캡처본을 가진 사람이 반복해서 스캔하면 그때마다 소유자의 진행 중인 챌린지가 대체된다. 입장은 못 하지만 유효 시간 동안 소유자의 검표를 지연시킬 수 있다.
+- non-extractable 키는 키 원문 유출만 막는다. XSS나 같은 브라우저 프로필에 접근한 공격자는 키를 "사용"해 QR과 챌린지 응답을 만들 수 있다. 하드웨어 증명(attestation)이 없어 "기기"는 사실상 "브라우저 프로필"이다.
+- Demo 로그인은 ID 입력만으로 세션을 발급하므로 ID를 아는 사람은 기기 변경을 호출할 수 있다. 계정을 넘겨받은 구매자는 기기 변경(티켓당 3회)으로 자기 기기를 등록할 수 있으며, 변경 횟수 제한과 `deviceChanged` 이벤트 필드로 흔적만 남긴다.
 - 검표 담당자 키는 공유 정적 키다. 담당자별 계정·권한 회수·시도 횟수 제한은 없다.
 - 비밀키 전달은 TLS에 의존한다. 운영 환경은 HTTPS가 필수이며 Web Crypto와 카메라도 보안 컨텍스트(HTTPS 또는 localhost)에서만 동작한다.
-- TOTP 비밀키, 서명, QR 원문, 검표 담당자 키는 로그·이벤트 payload에 남기지 않는다. 로그에는 ticketId·deviceId·결과 코드만 기록한다.
+- TOTP 비밀키, 서명, QR 원문, 챌린지, 검표 담당자 키는 로그·이벤트 payload에 남기지 않는다. 로그에는 ticketId·deviceId·checkInId·결과 코드만 기록한다.
 
 ## 프론트엔드 연동 경계
 
 실제 Demo 로그인과 예매에는 VITE_USE_MOCK_BTS=false와 VITE_USE_MOCK_TICKETING=false를 설정한다. 실제 예매 설정에서는 대기열도 실제 API를 사용한다. 단계 관측은 sessionStorage에 attempt/transition 식별자와 미확정 전이를 먼저 저장한 뒤 재전송한다. 화면 새로고침은 서버의 attempt·hold·booking 상태로 복원한다.
 
-카드 관리·사용자 신용 화면에는 Mock 또는 미구현 API adapter가 남아 있다. Demo에는 카드 등록·BTS 사용자 상세 프록시 API가 없다. 실제 API 모드의 QR 모달은 기기 키(IndexedDB의 non-extractable CryptoKey)로 동적 QR을 만들고, Mock 모드는 VITE_MOCK_QR의 정적 mock QR만 표시한다. 검표기 화면은 `/gate`이며 로그인 없이 검표 담당자 키로 사용한다. QR 표시나 브라우저 텔레메트리를 CHECK_IN으로 보내지 않는다. CHECK_IN은 서버 검표 성공으로만 생성된다. BTS UUID/Key를 브라우저 세션 식별자로 대체하지 않는다.
+카드 관리·사용자 신용 화면에는 Mock 또는 미구현 API adapter가 남아 있다. Demo에는 카드 등록·BTS 사용자 상세 프록시 API가 없다. 실제 API 모드의 QR 모달은 기기 키(IndexedDB의 non-extractable CryptoKey)로 동적 QR을 만들고, Mock 모드는 VITE_MOCK_QR의 정적 mock QR만 표시한다. QR 화면은 검표 챌린지를 약 1초 간격으로 조회해 자동으로 서명하며, 이 조회는 QR 생성과 무관하다. 검표기 화면은 `/gate`이며 로그인 없이 검표 담당자 키로 사용하고, 스캔 후 "기기 확인 중" 상태로 등록 기기의 응답을 기다린다. QR 표시나 브라우저 텔레메트리를 CHECK_IN으로 보내지 않는다. CHECK_IN은 서버 검표 성공으로만 생성된다. BTS UUID/Key를 브라우저 세션 식별자로 대체하지 않는다.
 
 서버 간 계약은 [BTS 연동 명세](bts-integration.md), 저장 구조는 [DB 명세](erd.md)를 따른다.

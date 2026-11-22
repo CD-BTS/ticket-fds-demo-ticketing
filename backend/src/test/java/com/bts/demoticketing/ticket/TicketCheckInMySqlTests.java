@@ -31,11 +31,12 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-/** Requires db/05-ticket-device-binding.sql in an isolated DB; never changes schema. Uses only test-owned rows. */
+/** Requires db/05-ticket-device-binding.sql and db/07-checkin-challenges.sql in an isolated DB; never changes schema. Uses only test-owned rows. */
 @Tag("mysql")
 @SpringBootTest(properties={"demo.jobs.enabled=false","bts.enabled=true","bts.service-id=it-checkin","bts.api-key=integration-only-key",
         "demo.checkin.enabled=true","demo.checkin.secret-key=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-        "demo.checkin.gate-key=integration-gate-key","demo.checkin.opens-before=PT2H","demo.checkin.max-device-changes=3"})
+        "demo.checkin.gate-key=integration-gate-key","demo.checkin.opens-before=PT2H","demo.checkin.max-device-changes=3",
+        "demo.checkin.gate-challenge-ttl=PT15S"})
 @AutoConfigureMockMvc
 @Import(TicketCheckInMySqlTests.TimeConfig.class)
 class TicketCheckInMySqlTests {
@@ -93,11 +94,27 @@ class TicketCheckInMySqlTests {
             String body="BTS1."+ticket+"."+deviceId+"."+ts+"."+totp;
             return body+"."+B64.encodeToString(TicketCryptoTests.sign(keys.getPrivate(),body));
         }
+        /** 검표 챌린지에 대한 이 기기 개인키의 서명. */
+        String checkInProof(String ticket,String checkInId,String challenge)throws Exception{
+            return B64.encodeToString(TicketCryptoTests.sign(keys.getPrivate(),CheckInService.proofMessage(ticket,deviceId,checkInId,challenge)));
+        }
+        /** 브라우저의 자동 응답: 대기 중인 챌린지를 받아 서명해 제출한다. */
+        CheckInService.Result respond(String ticket,DemoUser user)throws Exception{
+            var pending=checkIns.pending(ticket,user);
+            assertNotNull(pending,"no pending check-in challenge");
+            return checkIns.confirm(ticket,user,pending.checkInId(),checkInProof(ticket,pending.checkInId(),pending.challenge()));
+        }
+        /** 정상 검표: 검표기 스캔 → 등록 기기 응답. */
+        CheckInService.Result admit(String ticket,String qr)throws Exception{
+            assertEquals("PENDING",checkIns.scan(qr).status());
+            return respond(ticket,alice);
+        }
+        CheckInService.Result admit(String ticket)throws Exception{return admit(ticket,qr(ticket));}
     }
 
     @BeforeEach void setup(){
         assertEquals("demo_ticketing_db",jdbc.queryForObject("SELECT DATABASE()",String.class));
-        assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('ticket_device_bindings','ticket_device_challenges')",Integer.class),"Review/apply db/05-ticket-device-binding.sql in the isolated test database first");
+        assertEquals(3,jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('ticket_device_bindings','ticket_device_challenges','ticket_checkin_challenges')",Integer.class),"Review/apply db/05-ticket-device-binding.sql and db/07-checkin-challenges.sql in the isolated test database first");
         clock.time.set(TEST_NOW);SENT.clear();
         concert="it40_"+UUID.randomUUID();
         // 입장은 공연 시작 2시간 전부터다. 시작 1시간 전으로 두어 기본 상태를 입장 가능 시간으로 만든다.
@@ -125,6 +142,7 @@ class TicketCheckInMySqlTests {
     @AfterEach void cleanup(){
         if(alice==null||bob==null)return;
         String tickets="(SELECT t.id FROM admission_tickets t JOIN bookings b ON b.id=t.booking_id WHERE b.concert_id=?)";
+        jdbc.update("DELETE FROM ticket_checkin_challenges WHERE ticket_id IN "+tickets,concertId);
         jdbc.update("DELETE FROM ticket_device_challenges WHERE ticket_id IN "+tickets,concertId);
         jdbc.update("DELETE FROM ticket_device_bindings WHERE ticket_id IN "+tickets,concertId);
         jdbc.update("UPDATE concert_seats SET state='AVAILABLE',active_hold_id=NULL,active_booking_id=NULL WHERE concert_id=?",concertId);
@@ -150,6 +168,10 @@ class TicketCheckInMySqlTests {
     private long checkInEvents(){return jdbc.queryForObject("SELECT COUNT(*) FROM outbox_events WHERE user_id=? AND event_type='CHECK_IN'",Long.class,alice.id());}
     private Map<String,Object> data(String body){
         return json.convertValue(json.readValue(body,new TypeReference<Map<String,Object>>() {}).get("data"),new TypeReference<Map<String,Object>>() {});
+    }
+    private String challengeStatus(String checkInId){return jdbc.queryForObject("SELECT status FROM ticket_checkin_challenges WHERE public_id=?",String.class,checkInId);}
+    private org.springframework.test.web.servlet.ResultActions gateScan(Object body)throws Exception{
+        return mvc.perform(post("/api/v1/check-ins").header("X-Gate-Key","integration-gate-key").contentType("application/json").content(json.writeValueAsString(body)));
     }
     private String send(String path,String token,Object body,int expected,String expectedCode)throws Exception{
         var request=post(path).contentType("application/json").content(json.writeValueAsString(body));
@@ -195,13 +217,43 @@ class TicketCheckInMySqlTests {
         mvc.perform(post("/api/v1/check-ins").header("X-Gate-Key","wrong-gate-key-000000").contentType("application/json")
                 .content(json.writeValueAsString(scan))).andExpect(status().isUnauthorized());
         assertEquals("ISSUED",ticketStatus(ticket));
-        mvc.perform(post("/api/v1/check-ins").header("X-Gate-Key","integration-gate-key").contentType("application/json")
-                .content(json.writeValueAsString(scan))).andExpect(status().isOk()).andExpect(jsonPath("$.data.ticketId").value(ticket))
-                .andExpect(jsonPath("$.data.seatId").value("A-01")).andExpect(jsonPath("$.data.concertTitle").value("checkin test"));
+        // 1단계: 스캔은 챌린지만 발급한다. 아직 입장 처리도 이벤트도 없다.
+        var scanned=data(gateScan(scan).andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("PENDING"))
+                .andExpect(jsonPath("$.data.ticketId").value(ticket)).andExpect(jsonPath("$.data.seatId").value("A-01"))
+                .andExpect(jsonPath("$.data.concertTitle").value("checkin test")).andExpect(jsonPath("$.data.checkedInAt").doesNotExist())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
+        String checkInId=scanned.get("checkInId").toString();
+        assertFalse(scanned.containsKey("challenge"),"the gate never sees the device challenge");
+        assertEquals("ISSUED",ticketStatus(ticket));assertEquals(0,checkInEvents());
+        mvc.perform(get("/api/v1/check-ins/"+checkInId)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/check-ins/"+checkInId).header("Authorization","Bearer "+aliceToken)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/check-ins/"+UUID.randomUUID()).header("X-Gate-Key","integration-gate-key")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CHECKIN_NOT_FOUND"));
+        mvc.perform(get("/api/v1/check-ins/"+checkInId).header("X-Gate-Key","integration-gate-key")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING"));
+        // 2단계: 등록 기기가 챌린지를 받아 서명한다. 소유자 세션이 필요하다.
+        String challengePath="/api/v1/tickets/"+ticket+"/check-in-challenge",proofPath="/api/v1/tickets/"+ticket+"/check-in-proofs";
+        mvc.perform(get(challengePath)).andExpect(status().isUnauthorized());
+        mvc.perform(get(challengePath).header("Authorization","Bearer "+bobToken)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/tickets/"+ticketIds.get(1)+"/check-in-challenge").header("Authorization","Bearer "+aliceToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data").doesNotExist());
+        var pending=data(mvc.perform(get(challengePath).header("Authorization","Bearer "+aliceToken)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkInId").value(checkInId)).andExpect(jsonPath("$.data.deviceId").value(phone.deviceId))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8));
+        String nonce=pending.get("challenge").toString();
+        Map<String,Object> answer=Map.of("checkInId",checkInId,"proof",phone.checkInProof(ticket,checkInId,nonce));
+        send(proofPath,null,answer,401,"UNAUTHORIZED");
+        send(proofPath,bobToken,answer,403,"FORBIDDEN");
+        assertEquals("ISSUED",ticketStatus(ticket));
+        var admitted=data(send(proofPath,aliceToken,answer,200,"COMMON_200"));
+        assertEquals(ticket,admitted.get("ticketId"));assertEquals("A-01",admitted.get("seatId"));
         assertEquals("CHECKED_IN",ticketStatus(ticket));
-        // 캡처한 같은 QR의 재사용.
-        mvc.perform(post("/api/v1/check-ins").header("X-Gate-Key","integration-gate-key").contentType("application/json")
-                .content(json.writeValueAsString(scan))).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("TICKET_ALREADY_CHECKED_IN"));
+        mvc.perform(get("/api/v1/check-ins/"+checkInId).header("X-Gate-Key","integration-gate-key")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("COMPLETED")).andExpect(jsonPath("$.data.checkedInAt").exists());
+        mvc.perform(get(challengePath).header("Authorization","Bearer "+aliceToken)).andExpect(status().isOk()).andExpect(jsonPath("$.data").doesNotExist());
+        // 같은 응답의 재전송과 캡처한 같은 QR의 재사용.
+        send(proofPath,aliceToken,answer,409,"TICKET_ALREADY_CHECKED_IN");
+        gateScan(scan).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("TICKET_ALREADY_CHECKED_IN"));
         assertEquals(1,checkInEvents());
         assertEquals("ISSUED",ticketStatus(ticketIds.get(1)));
         // 입장 후에는 예매 취소·기기 변경이 불가하다.
@@ -221,6 +273,7 @@ class TicketCheckInMySqlTests {
         // 비밀키·서명·QR 원문은 이벤트에 실리지 않는다.
         String raw=json.writeValueAsString(event);
         assertFalse(raw.contains(totp.get("secret").toString()));assertFalse(raw.contains(qr.substring(qr.lastIndexOf('.')+1)));
+        assertFalse(raw.contains(nonce));assertFalse(raw.contains(answer.get("proof").toString()));
     }
 
     @Test void registrationRequiresOwnerFreshChallengeAndPossessionOfThePrivateKey()throws Exception{
@@ -263,9 +316,9 @@ class TicketCheckInMySqlTests {
         assertEquals(2,current.enroll(ticket,alice,true).changesRemaining());
         assertFalse(Arrays.equals(old.secret,current.secret));
         // 이전 기기의 QR, 그리고 이전 기기 키 + 새 deviceId 조합은 거부된다.
-        assertEquals("QR_REJECTED",code(()->checkIns.checkIn(old.qr(ticket))));
+        assertEquals("QR_REJECTED",code(()->checkIns.scan(old.qr(ticket))));
         old.deviceId=current.deviceId;
-        assertEquals("QR_REJECTED",code(()->checkIns.checkIn(old.qr(ticket))));
+        assertEquals("QR_REJECTED",code(()->checkIns.scan(old.qr(ticket))));
         assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM ticket_device_bindings WHERE user_id=? AND status='REVOKED' AND totp_secret_enc IS NULL AND revoked_at IS NOT NULL",Long.class,alice.id()));
         for(int remaining=1;remaining>=0;remaining--){
             current=new Device();
@@ -276,7 +329,7 @@ class TicketCheckInMySqlTests {
         assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM ticket_device_bindings WHERE user_id=? AND status='ACTIVE'",Long.class,alice.id()));
         assertEquals(4,jdbc.queryForObject("SELECT MAX(generation) FROM ticket_device_bindings WHERE user_id=?",Integer.class,alice.id()));
         // 한도에 도달해도 마지막으로 등록한 기기는 계속 유효하고 deviceChanged가 기록된다.
-        assertEquals(ticket,checkIns.checkIn(current.qr(ticket)).ticketId());
+        assertEquals(ticket,current.admit(ticket).ticketId());
         assertTrue(jdbc.queryForObject("SELECT JSON_EXTRACT(metadata,'$.deviceChanged') FROM outbox_events WHERE user_id=? AND event_type='CHECK_IN'",String.class,alice.id()).contains("true"));
         // 다른 좌석 티켓의 변경 횟수는 독립적이다.
         Device second=new Device();
@@ -289,37 +342,37 @@ class TicketCheckInMySqlTests {
         long ts=clock.instant().getEpochSecond();
         String valid=phone.qr(ticket);
         for(String bad:new String[]{"","hello","BTS2"+valid.substring(4),valid+"x",valid.replace("BTS1.","BTS1.."),valid.substring(0,valid.lastIndexOf('.'))})
-            assertEquals("QR_INVALID",code(()->checkIns.checkIn(bad)));
-        assertEquals("TICKET_NOT_FOUND",code(()->checkIns.checkIn(phone.qr(UUID.randomUUID().toString()))));
+            assertEquals("QR_INVALID",code(()->checkIns.scan(bad)));
+        assertEquals("TICKET_NOT_FOUND",code(()->checkIns.scan(phone.qr(UUID.randomUUID().toString()))));
         // 서명 후 내용 변조.
         String otherCode=Totp.code(phone.secret,Totp.counter(ts)).equals("000000")?"000001":"000000";
-        assertEquals("QR_REJECTED",code(()->checkIns.checkIn(valid.replaceFirst("\\.\\d{6}\\.","."+otherCode+"."))));
+        assertEquals("QR_REJECTED",code(()->checkIns.scan(valid.replaceFirst("\\.\\d{6}\\.","."+otherCode+"."))));
         // 기기 키는 맞지만 TOTP가 틀린 경우.
-        assertEquals("QR_REJECTED",code(()->checkIns.checkIn(phone.qr(ticket,ts,otherCode))));
+        assertEquals("QR_REJECTED",code(()->checkIns.scan(phone.qr(ticket,ts,otherCode))));
         // TOTP 비밀키와 deviceId만 복사한 다른 기기: 올바른 TOTP여도 서명이 맞지 않는다.
         Device copied=new Device();copied.secret=phone.secret;copied.deviceId=phone.deviceId;
-        assertEquals("QR_REJECTED",code(()->checkIns.checkIn(copied.qr(ticket))));
+        assertEquals("QR_REJECTED",code(()->checkIns.scan(copied.qr(ticket))));
         // 한 티켓의 기기로 다른 티켓 QR을 만들 수 없다.
-        assertEquals("QR_REJECTED",code(()->checkIns.checkIn(phone.qr(otherTicket))));
+        assertEquals("QR_REJECTED",code(()->checkIns.scan(phone.qr(otherTicket))));
         // 미래·과거 시각을 자기 서명해도 서버 시각 기준 ±1 step만 허용한다.
-        assertEquals("QR_EXPIRED",code(()->checkIns.checkIn(phone.qr(ticket,ts+120,Totp.code(phone.secret,Totp.counter(ts+120))))));
+        assertEquals("QR_EXPIRED",code(()->checkIns.scan(phone.qr(ticket,ts+120,Totp.code(phone.secret,Totp.counter(ts+120))))));
         clock.advance(Duration.ofSeconds(90));
-        assertEquals("QR_EXPIRED",code(()->checkIns.checkIn(valid)));
+        assertEquals("QR_EXPIRED",code(()->checkIns.scan(valid)));
         assertEquals("ISSUED",ticketStatus(ticket));assertEquals(0,checkInEvents());
 
         // 입장 시간 이전(공연 시작 2시간 전보다 이름)과 공연 종료 이후.
         clock.time.set(TEST_NOW.minus(Duration.ofHours(2)));
-        assertEquals("CHECKIN_NOT_OPEN",code(()->checkIns.checkIn(phone.qr(ticket))));
+        assertEquals("CHECKIN_NOT_OPEN",code(()->checkIns.scan(phone.qr(ticket))));
         clock.time.set(TEST_NOW.plus(Duration.ofHours(4)));
-        assertEquals("CHECKIN_NOT_OPEN",code(()->checkIns.checkIn(phone.qr(ticket))));
+        assertEquals("CHECKIN_NOT_OPEN",code(()->checkIns.scan(phone.qr(ticket))));
         assertEquals("ISSUED",ticketStatus(ticket));
 
         // 직전 step의 QR은 허용한다(스캔 지연).
         clock.time.set(TEST_NOW);
         String previous=phone.qr(ticket);
         clock.advance(Duration.ofSeconds(30));
-        assertEquals(ticket,checkIns.checkIn(previous).ticketId());
-        assertEquals("TICKET_ALREADY_CHECKED_IN",code(()->checkIns.checkIn(phone.qr(ticket))));
+        assertEquals(ticket,phone.admit(ticket,previous).ticketId());
+        assertEquals("TICKET_ALREADY_CHECKED_IN",code(()->checkIns.scan(phone.qr(ticket))));
     }
 
     @Test void cancelledBookingCannotCheckInOrRegister()throws Exception{
@@ -327,37 +380,132 @@ class TicketCheckInMySqlTests {
         Device phone=new Device();phone.enroll(ticket,alice,false);
         reservations.cancel(booking,alice);
         assertEquals("CANCELLED",ticketStatus(ticket));
-        assertEquals("TICKET_NOT_ADMITTABLE",code(()->checkIns.checkIn(phone.qr(ticket))));
+        assertEquals("TICKET_NOT_ADMITTABLE",code(()->checkIns.scan(phone.qr(ticket))));
         assertEquals("TICKET_NOT_ADMITTABLE",code(()->devices.challenge(ticket,alice)));
         assertEquals("TICKET_NOT_ADMITTABLE",code(()->devices.challenge(ticketIds.get(1),alice)));
         assertEquals(0,checkInEvents());
         assertEquals("CANCELLED",devices.tickets(booking,alice).get(0).status());
     }
 
-    @Test void concurrentScansOfOneQrAdmitExactlyOnceAndEachSeatHasItsOwnEvent()throws Exception{
-        String ticket=ticketIds.get(0);
-        Device phone=new Device();phone.enroll(ticket,alice,false);
-        String qr=phone.qr(ticket);
-        int scanners=8;
-        ExecutorService pool=Executors.newFixedThreadPool(scanners);
+    private List<String> race(int workers,Callable<String> work)throws Exception{
+        ExecutorService pool=Executors.newFixedThreadPool(workers);
         CountDownLatch start=new CountDownLatch(1);
         List<Future<String>> results=new ArrayList<>();
-        for(int i=0;i<scanners;i++)results.add(pool.submit(()->{
+        for(int i=0;i<workers;i++)results.add(pool.submit(()->{
             start.await();
-            try{checkIns.checkIn(qr);return "OK";}catch(ApiException e){return e.getResponseCode().getCode();}
+            try{return work.call();}catch(ApiException e){return e.getResponseCode().getCode();}
         }));
         start.countDown();
         List<String> outcomes=new ArrayList<>();
         for(var result:results)outcomes.add(result.get(30,TimeUnit.SECONDS));
         pool.shutdown();
+        return outcomes;
+    }
+
+    @Test void concurrentScansAndProofsOfOneTicketAdmitExactlyOnceAndEachSeatHasItsOwnEvent()throws Exception{
+        String ticket=ticketIds.get(0);
+        Device phone=new Device();phone.enroll(ticket,alice,false);
+        String qr=phone.qr(ticket);
+        int scanners=8;
+        // 여러 검표기가 같은 QR을 동시에 스캔해도 유효한 챌린지는 마지막 1개뿐이다.
+        List<String> scans=race(scanners,()->checkIns.scan(qr).checkInId());
+        assertEquals(scanners,new HashSet<>(scans).size(),scans.toString());
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM ticket_checkin_challenges WHERE status='PENDING' AND ticket_id=(SELECT id FROM admission_tickets WHERE public_id=?)",Long.class,ticket));
+        assertEquals(scanners-1,scans.stream().filter(id->challengeStatus(id).equals("SUPERSEDED")).count());
+        assertEquals("ISSUED",ticketStatus(ticket));assertEquals(0,checkInEvents());
+        // 같은 챌린지 응답이 동시에 여러 번 도착해도 한 번만 입장된다.
+        var pending=checkIns.pending(ticket,alice);
+        String proof=phone.checkInProof(ticket,pending.checkInId(),pending.challenge());
+        List<String> outcomes=race(scanners,()->{checkIns.confirm(ticket,alice,pending.checkInId(),proof);return "OK";});
         assertEquals(1,Collections.frequency(outcomes,"OK"),outcomes.toString());
         assertEquals(scanners-1,Collections.frequency(outcomes,"TICKET_ALREADY_CHECKED_IN"),outcomes.toString());
         assertEquals(1,checkInEvents());
+        assertEquals("COMPLETED",checkIns.status(pending.checkInId()).status());
         // 같은 예매의 다른 좌석은 별도 전이 ID로 한 번 더 기록된다.
         Device second=new Device();second.enroll(ticketIds.get(1),alice,false);
-        checkIns.checkIn(second.qr(ticketIds.get(1)));
+        second.admit(ticketIds.get(1));
         assertEquals(2,checkInEvents());
         assertEquals(2,jdbc.queryForObject("SELECT COUNT(DISTINCT business_transition_id) FROM outbox_events WHERE user_id=? AND event_type='CHECK_IN' AND aggregate_id=?",Long.class,alice.id(),booking));
+    }
+
+    @Test void capturedQrAloneCannotCheckInWithoutTheRegisteredDeviceKey()throws Exception{
+        String ticket=ticketIds.get(0);
+        Device phone=new Device();phone.enroll(ticket,alice,false);
+        // 구매자는 판매자가 보낸 QR 캡처본만 갖고 있다. 유효 시간 안이라 스캔은 통과하지만 챌린지만 발급된다.
+        String captured=phone.qr(ticket);
+        var scan=checkIns.scan(captured);
+        assertEquals("PENDING",scan.status());assertNull(scan.checkedInAt());
+        assertEquals("ISSUED",ticketStatus(ticket));assertEquals(0,checkInEvents());
+        // 구매자 세션으로는 챌린지를 볼 수도 응답할 수도 없다.
+        assertEquals("FORBIDDEN",code(()->checkIns.pending(ticket,bob)));
+        assertEquals("FORBIDDEN",code(()->checkIns.confirm(ticket,bob,scan.checkInId(),"AAAA")));
+        assertEquals("PENDING",challengeStatus(scan.checkInId()));
+        // 등록 기기의 응답이 없으면 챌린지는 만료되고 입장되지 않는다.
+        clock.advance(Duration.ofSeconds(15));
+        assertEquals("EXPIRED",checkIns.status(scan.checkInId()).status());
+        assertNull(checkIns.pending(ticket,alice));
+        assertEquals("ISSUED",ticketStatus(ticket));
+
+        // 판매자 계정까지 넘겨받아도(Demo 로그인은 ID만 필요) 개인키가 없는 기기의 서명은 거부되고 챌린지는 소비된다.
+        var second=checkIns.scan(phone.qr(ticket));
+        var pending=checkIns.pending(ticket,alice);
+        assertEquals(second.checkInId(),pending.checkInId());
+        Device buyer=new Device();buyer.deviceId=phone.deviceId;buyer.secret=phone.secret;
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,pending.checkInId(),buyer.checkInProof(ticket,pending.checkInId(),pending.challenge()))));
+        assertEquals("REJECTED",checkIns.status(second.checkInId()).status());
+        // 소비된 챌린지에는 등록 기기의 올바른 서명도 통하지 않는다(일회성).
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,pending.checkInId(),phone.checkInProof(ticket,pending.checkInId(),pending.challenge()))));
+        // QR에 들어 있던 서명을 응답으로 재사용할 수도 없다.
+        var third=checkIns.scan(phone.qr(ticket));
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,third.checkInId(),captured.substring(captured.lastIndexOf('.')+1))));
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,UUID.randomUUID().toString(),"not base64!")));
+        assertEquals("ISSUED",ticketStatus(ticket));assertEquals(0,checkInEvents());
+
+        // 실패·만료 후에도 등록 기기는 새로 스캔해 정상 입장할 수 있다.
+        assertEquals(ticket,phone.admit(ticket).ticketId());
+        assertEquals("CHECKED_IN",ticketStatus(ticket));assertEquals(1,checkInEvents());
+        assertEquals("TICKET_ALREADY_CHECKED_IN",code(()->checkIns.scan(captured)));
+    }
+
+    @Test void checkInChallengeIsOneTimeShortLivedAndBoundToTicketDeviceAndScan()throws Exception{
+        String ticket=ticketIds.get(0),otherTicket=ticketIds.get(1);
+        Device phone=new Device();phone.enroll(ticket,alice,false);
+        Device other=new Device();other.enroll(otherTicket,alice,false);
+        assertNull(checkIns.pending(ticket,alice));
+        // 새 스캔은 이전 챌린지를 무효화한다. 이전 챌린지에 대한 서명은 새 챌린지에 쓸 수 없다.
+        var first=checkIns.scan(phone.qr(ticket));
+        var firstChallenge=checkIns.pending(ticket,alice);
+        var second=checkIns.scan(phone.qr(ticket));
+        assertEquals("SUPERSEDED",checkIns.status(first.checkInId()).status());
+        String stale=phone.checkInProof(ticket,first.checkInId(),firstChallenge.challenge());
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,first.checkInId(),stale)));
+        assertEquals("PENDING",challengeStatus(second.checkInId()));
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,second.checkInId(),stale)));
+        assertEquals("REJECTED",challengeStatus(second.checkInId()));
+
+        // 한 티켓의 챌린지·기기로 다른 티켓을 입장시킬 수 없다.
+        var third=checkIns.scan(phone.qr(ticket));
+        var thirdChallenge=checkIns.pending(ticket,alice);
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(otherTicket,alice,third.checkInId(),other.checkInProof(otherTicket,third.checkInId(),thirdChallenge.challenge()))));
+        assertEquals("PENDING",challengeStatus(third.checkInId()));
+        // 유효 시간(15초)이 지나면 올바른 서명도 거부된다.
+        clock.advance(Duration.ofSeconds(15));
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,third.checkInId(),phone.checkInProof(ticket,third.checkInId(),thirdChallenge.challenge()))));
+        assertEquals("ISSUED",ticketStatus(ticket));assertEquals("ISSUED",ticketStatus(otherTicket));assertEquals(0,checkInEvents());
+
+        // 스캔 후 기기를 변경하면 이전 기기는 응답할 수 없고, 새 기기는 자기 QR을 다시 스캔해야 한다.
+        var fourth=checkIns.scan(phone.qr(ticket));
+        var fourthChallenge=checkIns.pending(ticket,alice);
+        Device replaced=new Device();replaced.enroll(ticket,alice,true);
+        assertNull(checkIns.pending(ticket,alice));
+        assertEquals("CHECKIN_PROOF_INVALID",code(()->checkIns.confirm(ticket,alice,fourth.checkInId(),phone.checkInProof(ticket,fourth.checkInId(),fourthChallenge.challenge()))));
+        var fifth=checkIns.scan(replaced.qr(ticket));
+        var fifthChallenge=checkIns.pending(ticket,alice);
+        // 스캔 후 예매가 취소되면 올바른 응답도 입장으로 이어지지 않는다.
+        reservations.cancel(booking,alice);
+        assertEquals("TICKET_NOT_ADMITTABLE",code(()->checkIns.confirm(ticket,alice,fifth.checkInId(),replaced.checkInProof(ticket,fifth.checkInId(),fifthChallenge.challenge()))));
+        assertEquals("REJECTED",checkIns.status(fifth.checkInId()).status());
+        assertEquals("CANCELLED",ticketStatus(ticket));assertEquals(0,checkInEvents());
     }
 
     private static HttpServer remote(){

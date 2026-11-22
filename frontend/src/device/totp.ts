@@ -42,6 +42,14 @@ export function proofMessage(change: boolean, ticketId: string, challenge: strin
   return `${change ? 'BTS-DEVICE-CHANGE' : 'BTS-DEVICE-REGISTER'}.${ticketId}.${challenge}.${publicKey}`
 }
 
+/**
+ * 검표 시 서버 챌린지에 대한 개인키 소유 증명 대상 문자열(서버: CheckInService.proofMessage).
+ * QR 속 서명과 달리 스캔마다 새로 발급된 챌린지를 포함하므로 캡처본으로는 만들 수 없다.
+ */
+export function checkInMessage(ticketId: string, deviceId: string, checkInId: string, challenge: string): string {
+  return `BTS-CHECKIN.${ticketId}.${deviceId}.${checkInId}.${challenge}`
+}
+
 export interface QrKeys {
   ticketId: string
   deviceId: string

@@ -137,6 +137,28 @@ export interface CheckInResult {
   checkedInAt: string
 }
 
+/**
+ * 검표기가 보는 검표 요청. 스캔 직후는 PENDING 이고, 등록 기기가 챌린지에 서명해야 COMPLETED 가 된다.
+ * REJECTED: 잘못된 응답, SUPERSEDED: 같은 티켓의 새 스캔으로 대체됨, EXPIRED: 등록 기기가 응답하지 않음.
+ */
+export interface CheckInScan {
+  checkInId: string
+  status: 'PENDING' | 'COMPLETED' | 'REJECTED' | 'SUPERSEDED' | 'EXPIRED'
+  ticketId: string
+  concertTitle: string
+  seatId: string
+  expiresAt: string
+  checkedInAt: string | null
+}
+
+/** 등록 기기가 서명할 검표 챌린지 */
+export interface CheckInChallenge {
+  checkInId: string
+  deviceId: string
+  challenge: string
+  expiresAt: string
+}
+
 // ---- 계정 등급 / 의심 점수 (산식: src/risk/credit.ts, Feature: src/risk/features.ts) ----
 import type { AppliedStanding, CreditResult } from '../risk/credit'
 import type { BehaviorFeatures } from '../risk/features'
