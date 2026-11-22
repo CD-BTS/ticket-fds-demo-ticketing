@@ -35,8 +35,10 @@ const SEATS = Math.min(4, Math.max(1, Number(args.seats || 2)))
 const CONCERT = args.concert === undefined ? 0 : args.concert   // 숫자=목록 순서(0부터), 문자열=공연 ID
 const HEADLESS = !!args.headless
 const OUT = String(args.out || 'macro-results.csv')
-const CARD = String(args.card || '123456789012345').replace(/\D/g, '').slice(0, 15).padEnd(15, '0')
-const PAY = String(args.pay || 'direct')          // direct | saved
+// --card: 저장된 테스트 카드 순번(1=기본 카드, 2) 또는 직접 입력할 가상 카드번호(숫자 15자리)
+const CARD_ARG = String(args.card === undefined || args.card === true ? '1' : args.card).replace(/\D/g, '')
+const CARD_NUMBER = CARD_ARG.length === 15 ? CARD_ARG : ''
+const CARD = CARD_NUMBER ? 0 : Math.max(1, Number(CARD_ARG) || 1)
 const BASE_USER = String(args.user || 'macro01')
 const TIMEOUT = Number(args.timeout || 60) * 1000 // 한 번의 예매에 허용하는 최대 시간(초)
 const CANCEL = !!args.cancel                        // 예매가 끝나면 마이페이지에서 바로 취소해 좌석을 되돌린다
@@ -254,16 +256,19 @@ async function runOnce(browser, user) {
     // 6) 결제
     at('payment')
     await pause(P.pause)
-    const saved = page.locator('button.card-row:not(.card-row-direct)')
-    if (PAY === 'saved' && (await saved.count())) {
-      await saved.first().click()
-    } else {
-      await page.locator('button.card-row-direct').click()
+    // 기본 테스트 카드가 이미 선택돼 있다. 다른 카드나 직접 입력을 지정한 경우에만 골라 준다
+    if (CARD_NUMBER) {
+      await page.locator('input[name="pay-card"][value="direct"]').check()
       await pause(P.pause)
-      await typeInto(page.locator('input[name="test-card-number"]'), CARD)
+      await typeInto(page.locator('input[name="test-card-number"]'), CARD_NUMBER)
       await pause(P.pause)
-      await page.getByRole('button', { name: /결제하기/ }).click()
+    } else if (CARD > 1) {
+      const cards = page.locator('input[name="pay-card"]:not([value="direct"])')
+      if (CARD > (await cards.count())) throw new Error(`--card ${CARD}: 결제 화면에 그 순번의 카드가 없음`)
+      await cards.nth(CARD - 1).check()
+      await pause(P.pause)
     }
+    await page.getByRole('button', { name: /결제하기/ }).click()
     await page.getByRole('heading', { name: '예매가 완료되었습니다' }).waitFor()
     t.paid = Date.now()
     at('done')

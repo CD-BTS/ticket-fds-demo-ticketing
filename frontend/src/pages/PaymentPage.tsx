@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { cardsApi, CARD_DIGITS, type PaymentCard } from '../api/cards'
 import { ApiError, sleep } from '../api/client'
-import { paymentIdentifierFor } from '../api/paymentId'
+import { DEFAULT_TEST_CARD_ID, TEST_CARDS, paymentIdentifierFor } from '../api/paymentId'
 import { ticketing } from '../api/ticketing'
 import { queueApi } from '../api/queue'
 import type { Booking, Concert, Seat, SeatHold } from '../api/types'
@@ -15,8 +15,8 @@ import { clearAttempt, getAttempt, reportStage } from '../api/bookingAttempts'
 
 const PAY_DELAY_MS = 1200
 
-/** 결제 수단: 등록해 둔 카드를 고르거나, 카드번호를 직접 입력 */
-type Method = { kind: 'saved'; card: PaymentCard } | { kind: 'direct'; last4: string }
+/** 결제 수단: 저장된 테스트 카드(기본)·마이페이지에서 등록해 둔 카드 중 선택하거나, 카드번호를 직접 입력 */
+interface PayCard { id: string; nickname: string; last4: string; paymentIdentifier: string }
 const DIRECT = 'direct'
 
 export default function PaymentPage() {
@@ -33,10 +33,9 @@ export default function PaymentPage() {
   const [concert, setConcert] = useState<Concert | null>(null)
   const [seats, setSeats] = useState<Seat[]>([])
   const [cards, setCards] = useState<PaymentCard[] | null>(null)
-  const [directOpen, setDirectOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState<string>(DEFAULT_TEST_CARD_ID) // 기본 테스트 카드가 자동 선택된다
   const [digits, setDigits] = useState('') // 직접 입력한 번호(숫자만). 저장·전송하지 않고 화면 state 로만 쓴다.
   const [phase, setPhase] = useState<'form' | 'paying' | 'done'>('form')
-  const [payingKey, setPayingKey] = useState<string | null>(null) // 결제 중인 카드 id 또는 'direct'
   const [paidWith, setPaidWith] = useState('')
   const [booking, setBooking] = useState<Booking | null>(null)
   const [error, setError] = useState('')
@@ -94,7 +93,7 @@ export default function PaymentPage() {
     cardsApi
       .list(userId)
       .then(setCards)
-      .catch(() => setCards([])) // 카드 목록을 못 불러와도 직접 입력으로 결제할 수 있다
+      .catch(() => setCards([])) // 등록 카드 목록을 못 불러와도 테스트 카드로 결제할 수 있다
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, userId, hold])
 
@@ -110,7 +109,17 @@ export default function PaymentPage() {
   const expired = phase !== 'done' && remaining <= 0
   const ready = mySeats.length > 0 // 좌석·금액 정보가 로딩된 뒤에만 결제 가능
   const paying = phase === 'paying'
-  const locked = !stageReady || paying || expired || !ready || leaving // 결제 수단 버튼 비활성 조건
+  const locked = !stageReady || paying || expired || !ready || leaving // 결제 버튼 비활성 조건
+  const payCards = useMemo<PayCard[]>(
+    () => [...TEST_CARDS, ...(cards ?? []).map((c) => ({ id: c.id, nickname: c.nickname, last4: c.last4, paymentIdentifier: paymentIdentifierFor(c.last4) }))],
+    [cards],
+  )
+  const direct = selectedId === DIRECT
+  // 직접 입력은 끝 4자리로 테스트 결제 식별자를 정한다 (같은 번호면 항상 같은 식별자)
+  const selected: PayCard = direct
+    ? { id: DIRECT, nickname: '직접 입력 카드', last4: digits.slice(-4), paymentIdentifier: paymentIdentifierFor(digits.slice(-4)) }
+    : payCards.find((c) => c.id === selectedId) ?? payCards[0]
+  const payable = !locked && (!direct || digits.length === CARD_DIGITS)
 
   if (restoring) return <p role="status">예매 진행 상태를 확인하고 있습니다.</p>
   if (!hold || !userId) return <section className="card"><p>{error || '선점 정보를 찾지 못했습니다.'}</p><Link to={`/concerts/${id}`}>공연으로 돌아가기</Link></section>
@@ -130,33 +139,30 @@ export default function PaymentPage() {
     nav(`/concerts/${id}`)
   }
 
-  const pay = async (m: Method) => {
-    if (locked || paymentLock.current) return
+  const pay = async (card: PayCard) => {
+    if (!payable || paymentLock.current) return
     paymentLock.current = true
     setPhase('paying')
-    setPayingKey(m.kind === 'saved' ? m.card.id : DIRECT)
     setError('')
     recordRequest(userId, 'pay')
     try {
       await sleep(PAY_DELAY_MS) // 결제 시연용 지연. 카드번호는 서버로 전송하지 않는다.
-      const last4 = m.kind === 'saved' ? m.card.last4 : m.last4
-      const b = await ticketing.confirmBooking(hold.holdId, userId, paymentIdentifierFor(last4))
+      const b = await ticketing.confirmBooking(hold.holdId, userId, card.paymentIdentifier)
       track('BOOKING_CONFIRM', {
         concertId: id,
         bookingId: b.id,
         seatIds: b.seatIds,
-        paymentMethod: m.kind === 'saved' ? 'SAVED_CARD' : 'DIRECT_INPUT', // 카드번호 자체는 기록하지 않는다
+        paymentMethod: card.id === DIRECT ? 'DIRECT_INPUT' : 'SAVED_CARD', // 카드번호 자체는 기록하지 않는다
       })
       // 예매가 끝났으니 대기열 입장 기록을 지운다. 다음 예매 시도에서 보안 확인(캡차)이 다시 나온다.
       queueApi.leave(id).catch(() => { })
-      setPaidWith(m.kind === 'saved' ? `${m.card.nickname} ···· ${m.card.last4}` : `직접 입력 카드 ···· ${m.last4}`)
+      setPaidWith(`${card.nickname} ···· ${card.last4}`)
       setDigits('')
       setBooking(b)
       setPhase('done')
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '결제에 실패했습니다. 다시 시도해 주세요.')
       setPhase('form')
-      setPayingKey(null)
     } finally {
       paymentLock.current = false
     }
@@ -221,48 +227,54 @@ export default function PaymentPage() {
           <div className="timer" role="status">
             {expired ? '선점 시간이 만료되었습니다' : <>좌석 선점 유지 시간 <b>{mm}:{ss}</b></>}
           </div>
-          <p className="small muted pay-hint">카드를 누르면 바로 {won(total)}이 결제됩니다.</p>
+          <p className="small muted pay-hint">테스트 카드를 선택하거나 카드번호를 직접 입력하세요. 실제 결제는 일어나지 않습니다.</p>
 
-          <ul className="card-list">
-            {cards === null && <li className="muted small">카드 목록을 불러오는 중…</li>}
-            {cards?.length === 0 && <li className="muted small">등록된 카드가 없습니다. 아래에서 직접 입력하거나, 마이페이지에서 카드를 등록해 두세요.</li>}
-            {cards?.map((c) => (
+          <ul className="card-list" role="radiogroup" aria-label="결제 카드">
+            {payCards.map((c) => (
               <li key={c.id}>
-                <button type="button" className="card-row" disabled={locked} onClick={() => pay({ kind: 'saved', card: c })}>
+                <label className={`card-row card-row-select ${c.id === selected.id ? 'is-selected' : ''}`}>
                   <span className="card-row-main">
+                    <input
+                      type="radio"
+                      name="pay-card"
+                      value={c.id}
+                      checked={c.id === selected.id}
+                      disabled={paying || expired || leaving}
+                      onChange={() => setSelectedId(c.id)}
+                    />
                     <b>{c.nickname}</b>
                     <span className="masked">···· {c.last4}</span>
                   </span>
-                  <span className="card-row-act">{payingKey === c.id ? '결제 처리 중…' : '결제'}</span>
-                </button>
+                  {c.id === DEFAULT_TEST_CARD_ID && <span className="card-row-act">기본</span>}
+                </label>
               </li>
             ))}
             <li>
-              <button
-                type="button"
-                className="card-row card-row-direct"
-                disabled={paying || expired || leaving}
-                aria-expanded={directOpen}
-                onClick={() => setDirectOpen((o) => !o)}
-              >
-                <span className="card-row-main"><b>직접 입력</b></span>
-                <span className="card-row-act">{directOpen ? '닫기' : '+'}</span>
-              </button>
-              {directOpen && (
+              <label className={`card-row card-row-select card-row-direct ${direct ? 'is-selected' : ''}`}>
+                <span className="card-row-main">
+                  <input
+                    type="radio"
+                    name="pay-card"
+                    value={DIRECT}
+                    checked={direct}
+                    disabled={paying || expired || leaving}
+                    onChange={() => setSelectedId(DIRECT)}
+                  />
+                  <b>카드번호 직접 입력</b>
+                </span>
+              </label>
+              {direct && (
                 <div className="direct-form">
                   <CardNumberField value={digits} onChange={setDigits} disabled={locked} autoFocus />
                   <CardHelp count={digits.length} />
-                  <button
-                    className="btn btn-primary btn-block"
-                    disabled={digits.length !== CARD_DIGITS || locked}
-                    onClick={() => pay({ kind: 'direct', last4: digits.slice(-4) })}
-                  >
-                    {payingKey === DIRECT ? '결제 처리 중…' : `${won(total)} 결제하기`}
-                  </button>
                 </div>
               )}
             </li>
           </ul>
+
+          <button className="btn btn-primary btn-block pay-submit" disabled={!payable} onClick={() => pay(selected)}>
+            {paying ? '결제 처리 중…' : `${won(total)} 결제하기`}
+          </button>
 
           {error && <p className="error" role="alert">{error}</p>}
 
