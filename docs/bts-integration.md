@@ -43,13 +43,13 @@ BTS는 `(serviceId,externalEventId)`로 중복을 구분한다. 같은 ID·같�
 | BOOKING | 유효한 hold로 예매 확정 commit | concertId,performanceStartsAt,performanceEndsAt,ticketIds,bookingDurationSeconds,paymentIdentifier,ipAddress, 연결된 경우 attemptId |
 | CANCEL | CONFIRMED→CANCELLED commit | concertId,performanceStartsAt,performanceEndsAt,ticketIds, 연결된 경우 attemptId |
 | BOOKING_ATTEMPT | 예매 시작·클라이언트 관측·서버 확인 단계 journal | attemptId,transitionId,concertId,stage,status,sequence,source,recordedAt 및 문맥 필드 |
-| CHECK_IN | 서버 검표 성공(ISSUED→CHECKED_IN) commit | concertId,performanceStartsAt,performanceEndsAt,deviceChanged; top-level ticketId와 bookingId |
+| CHECK_IN | 서버 검표 확정(등록 기기의 챌린지 서명 검증 후 ISSUED→CHECKED_IN) commit | concertId,performanceStartsAt,performanceEndsAt,deviceChanged; top-level ticketId와 bookingId |
 
 bookingDurationSeconds는 hold 생성~서버 확정의 0 이상 number다. paymentIdentifier는 허용된 테스트 식별자이며 카드번호/hash를 대신 수집하지 않는다. ipAddress는 서버가 관측한 요청 peer다. Forwarded/X-Forwarded-For는 신뢰 프록시 설정 없이 사용하지 않는다. 공연 시각·ticketIds는 예매 snapshot에서 얻으며 실제 참석 사실을 의미하지 않는다.
 
 일반 이벤트의 metadata.bookingDurationSeconds는 제공되면 0 이상 숫자, metadata.deviceChanged는 제공되면 boolean이어야 한다. Feature 원천 전달과 BTS Feature 계산은 별개다. 브라우저 클릭·QR 표시·선점 만료를 BOOKING/CANCEL/CHECK_IN으로 만들어 보내지 않는다.
 
-CHECK_IN은 검표 API가 티켓을 최초로 CHECKED_IN으로 바꾼 트랜잭션에서만 생성한다. 거부된 스캔·중복 스캔·QR 표시는 이벤트가 아니다. occurredAt은 서버 검표 시각(밀리초 단위)이다. Outbox의 aggregate_id는 예매 ID라서 같은 예매의 BOOKING이 SENT된 뒤 전송되고, business_transition_id는 `<ticketId>:CHECK_IN`이라 좌석별로 한 건씩 생성된다. 전송 시 원천 metadata의 ticketId를 top-level로 옮기고 응답의 ticketId도 검증한다. `deviceChanged`는 검표에 쓰인 기기가 최초 등록 기기가 아니면 true다. TOTP 비밀키·서명·QR 원문은 싣지 않는다.
+CHECK_IN은 검표 API가 티켓을 최초로 CHECKED_IN으로 바꾼 트랜잭션에서만 생성한다. QR 스캔(챌린지 발급)만으로는 생성되지 않으며, 등록 기기가 챌린지에 올바르게 서명해 입장이 확정된 때에만 생성된다. 거부된 스캔·중복 스캔·응답 없는(만료된) 스캔·잘못된 응답·QR 표시는 이벤트가 아니다. payload 형식은 바뀌지 않았다. occurredAt은 서버 검표 시각(밀리초 단위)이다. Outbox의 aggregate_id는 예매 ID라서 같은 예매의 BOOKING이 SENT된 뒤 전송되고, business_transition_id는 `<ticketId>:CHECK_IN`이라 좌석별로 한 건씩 생성된다. 전송 시 원천 metadata의 ticketId를 top-level로 옮기고 응답의 ticketId도 검증한다. `deviceChanged`는 검표에 쓰인 기기가 최초 등록 기기가 아니면 true다. TOTP 비밀키·서명·QR 원문·챌린지는 싣지 않는다.
 
 BOOKING_ATTEMPT는 [예매 시도 명세](booking-attempts.md)를 따른다. COMPLETED/SUCCEEDED는 metadata.bookingId로 실제 확정 예매를 연결한다. BOOKING/CANCEL은 top-level bookingId를 유지하고 metadata.attemptId만 추가한다. 기존에 동결된 payload를 소급 수정하지 않는다.
 
@@ -97,11 +97,12 @@ BTS_ENABLED=true이고 DEMO_JOBS_ENABLED=true이면 기동 직후와 BTS_CONCERT
 | BTS_BASE_URL | 활성 시 필수; HTTPS, 루프백 테스트만 HTTP 허용 |
 | BTS_SERVICE_ID | demo-ticketing; 사용자/이벤트 namespace |
 | BTS_API_KEY | 활성 시 필수; 런타임 비밀정보 |
-| CHECKIN_ENABLED | false; 05 스키마 적용 후 true. 동적 QR·검표 API와 CHECK_IN 생성 |
+| CHECKIN_ENABLED | false; 05·07 스키마 적용 후 true. 동적 QR·검표 API와 CHECK_IN 생성 |
 | TICKET_SECRET_KEY | 활성 시 필수; 32바이트의 Base64. TOTP 비밀키 암호화 키, 런타임 비밀정보 |
 | GATE_API_KEY | 활성 시 필수; 16자 이상. 검표 담당자 인증, 런타임 비밀정보 |
 | CHECKIN_OPENS_BEFORE | PT2H; 공연 시작 전 입장 허용 시간 |
 | DEVICE_CHALLENGE_TTL / DEVICE_MAX_CHANGES | PT2M / 3 |
+| CHECKIN_CHALLENGE_TTL | PT15S; 검표 스캔 후 등록 기기가 챌린지에 응답해야 하는 시간 |
 | POLICY_DECISION_MODE | disabled/mock/bts; bts는 대기열(QUEUE_JOIN)과 좌석 선점(BOOKING_ATTEMPT) 두 시점에 호출 |
 | BTS_CONCERT_SYNC_MS | 600000; 공연 BTS 동기화 주기(ms) |
 | CAPTCHA_MODE | disabled/mock/hcaptcha; hcaptcha는 HCAPTCHA_SITE_KEY·HCAPTCHA_SECRET 필수 |

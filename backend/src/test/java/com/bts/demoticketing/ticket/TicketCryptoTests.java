@@ -56,14 +56,14 @@ class TicketCryptoTests {
 
     @Test void settingsFailFastOnlyWhenEnabledAndDisabledFeatureIsUnavailable(){
         String key=Base64.getEncoder().encodeToString(new byte[32]);
-        var disabled=new CheckInSettings(false,"","",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),3);
+        var disabled=new CheckInSettings(false,"","",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),java.time.Duration.ofSeconds(15),3);
         assertEquals("SERVICE_UNAVAILABLE",assertThrows(ApiException.class,disabled::requireEnabled).getResponseCode().getCode());
-        assertDoesNotThrow(()->new CheckInSettings(true,key,"gate-key-0123456789",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),3).requireEnabled());
+        assertDoesNotThrow(()->new CheckInSettings(true,key,"gate-key-0123456789",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),java.time.Duration.ofSeconds(15),3).requireEnabled());
         for(String bad:new String[]{"","not base64!",Base64.getEncoder().encodeToString(new byte[16])}){
-            var error=assertThrows(IllegalArgumentException.class,()->new CheckInSettings(true,bad,"gate-key-0123456789",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),3));
+            var error=assertThrows(IllegalArgumentException.class,()->new CheckInSettings(true,bad,"gate-key-0123456789",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),java.time.Duration.ofSeconds(15),3));
             assertFalse(!bad.isEmpty()&&error.getMessage().contains(bad));
         }
-        assertThrows(IllegalArgumentException.class,()->new CheckInSettings(true,key,"short",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),3));
+        assertThrows(IllegalArgumentException.class,()->new CheckInSettings(true,key,"short",java.time.Duration.ofHours(2),java.time.Duration.ofMinutes(2),java.time.Duration.ofSeconds(15),3));
     }
 
     static KeyPair pair(String curve)throws GeneralSecurityException{

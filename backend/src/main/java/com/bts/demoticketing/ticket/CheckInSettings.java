@@ -11,7 +11,7 @@ import com.bts.demoticketing.common.response.ResponseCode;
 @Component
 public class CheckInSettings {
     public final boolean enabled;
-    public final Duration opensBefore,challengeTtl;
+    public final Duration opensBefore,challengeTtl,gateChallengeTtl;
     public final int maxDeviceChanges;
     private final byte[] secretKey;
     private final String gateKey;
@@ -20,8 +20,9 @@ public class CheckInSettings {
             @Value("${demo.checkin.gate-key:}") String gateKey,
             @Value("${demo.checkin.opens-before:PT2H}") Duration opensBefore,
             @Value("${demo.checkin.challenge-ttl:PT2M}") Duration challengeTtl,
+            @Value("${demo.checkin.gate-challenge-ttl:PT15S}") Duration gateChallengeTtl,
             @Value("${demo.checkin.max-device-changes:3}") int maxDeviceChanges) {
-        this.enabled=enabled;this.opensBefore=opensBefore;this.challengeTtl=challengeTtl;
+        this.enabled=enabled;this.opensBefore=opensBefore;this.challengeTtl=challengeTtl;this.gateChallengeTtl=gateChallengeTtl;
         this.maxDeviceChanges=maxDeviceChanges;this.gateKey=gateKey;
         byte[] key=null;
         if(enabled){
@@ -31,7 +32,7 @@ public class CheckInSettings {
             if(key.length!=32)throw new IllegalArgumentException("TICKET_SECRET_KEY must decode to 32 bytes");
             if(gateKey.length()<16||gateKey.length()>200||!gateKey.matches("[\\x21-\\x7E]+"))
                 throw new IllegalArgumentException("GATE_API_KEY must be 16-200 printable ASCII characters");
-            if(opensBefore.isNegative()||challengeTtl.isNegative()||challengeTtl.isZero()||maxDeviceChanges<0)
+            if(opensBefore.isNegative()||challengeTtl.isNegative()||challengeTtl.isZero()||gateChallengeTtl.isNegative()||gateChallengeTtl.isZero()||maxDeviceChanges<0)
                 throw new IllegalArgumentException("Invalid check-in settings");
         }
         this.secretKey=key;

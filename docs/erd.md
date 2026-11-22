@@ -26,6 +26,8 @@ erDiagram
   booking_seats ||--o| admission_tickets : issues
   admission_tickets ||--o{ ticket_device_bindings : binds
   admission_tickets ||--o{ ticket_device_challenges : challenges
+  admission_tickets ||--o{ ticket_checkin_challenges : scans
+  ticket_device_bindings ||--o{ ticket_checkin_challenges : answers
   demo_users ||--o{ ticket_device_bindings : registers
   demo_users ||--o{ outbox_events : emits
   demo_users ||--o{ booking_attempts : starts
@@ -76,15 +78,18 @@ admission_tickets는 변경하지 않는다. 검표는 기존 status(ISSUED→CH
 |---|---|
 | ticket_device_bindings | id PK; public_id CHAR(36) ascii_bin UNIQUE(QR의 deviceId); ticket_id FK admission_tickets; user_id FK demo_users; status ACTIVE/REVOKED; generation INT(1=최초 등록, 변경마다 +1); public_key VARBINARY(128)(P-256 SPKI DER); totp_secret_enc VARBINARY(64) nullable; created_at; revoked_at; active_ticket_id 생성 컬럼; UNIQUE(active_ticket_id), UNIQUE(ticket_id,generation) |
 | ticket_device_challenges | id PK; public_id CHAR(36) ascii_bin UNIQUE; ticket_id/user_id FK; challenge CHAR(43); expires_at; UNIQUE(ticket_id,user_id) |
+| ticket_checkin_challenges | id PK; public_id CHAR(36) ascii_bin UNIQUE(checkInId); ticket_id FK admission_tickets; binding_id FK ticket_device_bindings; challenge CHAR(43); status PENDING/COMPLETED/REJECTED/SUPERSEDED; created_at; expires_at; resolved_at nullable; pending_ticket_id 생성 컬럼; UNIQUE(pending_ticket_id) |
 
 - `active_ticket_id`는 status가 ACTIVE일 때만 ticket_id를 갖는 STORED 생성 컬럼이다. UNIQUE로 티켓당 활성 기기 1개를 DB가 보장한다.
 - ck_device_status: ACTIVE는 암호화된 비밀키가 있고 revoked_at이 NULL, REVOKED는 비밀키가 NULL이고 revoked_at이 있다. 기기 변경 시 이전 행은 비밀키를 지우고 이력으로만 남는다.
 - totp_secret_enc는 AES-256-GCM의 IV(12)‖암호문‖tag(16)이다. 키는 TICKET_SECRET_KEY이며 AAD로 ticketId:deviceId를 묶는다. 키를 바꾸면 기존 바인딩은 복호화할 수 없어 모두 기기 변경이 필요하다.
 - 챌린지는 비밀이 아닌 난수이며 사용 시 행을 삭제한다. 새 챌린지 발급은 같은 티켓·사용자의 이전 행을 대체한다.
+- ticket_checkin_challenges는 검표 스캔마다 생기는 일회성 챌린지다. `pending_ticket_id`는 status가 PENDING일 때만 ticket_id를 갖는 STORED 생성 컬럼이며 UNIQUE로 티켓당 미완료 챌린지 1개를 DB가 보장한다. 새 스캔은 이전 PENDING을 SUPERSEDED로 바꾼다. 종료는 `status='PENDING'` 조건부 UPDATE로 한 번만 일어난다. 만료는 행을 바꾸지 않고 expires_at으로 판단한다. 검표기가 결과를 조회하므로 종료된 행도 남기며, 같은 티켓의 다음 스캔 때 1시간이 지난 종료 행을 지운다.
+- ck_checkin_challenge_status: PENDING은 resolved_at이 NULL, 나머지 상태는 resolved_at이 있다.
 - 기기 등록·변경·검표는 해당 예매 행(bookings)을 FOR UPDATE로 잠가 예매 취소와 직렬화한다.
 - 예매 취소는 바인딩을 건드리지 않는다. 취소된 티켓의 바인딩은 ACTIVE로 남지만 티켓 상태 때문에 검표·변경이 모두 거부된다.
 
-정확한 정의는 [05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)을 따른다.
+정확한 정의는 [05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)과 [07-checkin-challenges.sql](../backend/db/07-checkin-challenges.sql)을 따른다.
 
 ## Outbox
 
@@ -107,6 +112,6 @@ Hibernate ddl-auto=none, spring.sql.init.mode=never다. Compose는 새 빈 볼�
 
 [06-event-time-millis.sql](../backend/db/06-event-time-millis.sql)은 02·04가 적용된 기존 DB에만 한 번 적용한다(#44). outbox_events.occurred_at_utc와 booking_attempt_events.occurred_at을 DATETIME(3)로 넓히며 기존 값은 .000으로 유지된다. 새 볼륨은 이미 DATETIME(3)이므로 적용하지 않는다. BTS가 밀리초 occurredAt을 받는 버전(ticket-fds-admin #40)을 먼저 배포한다.
 
-[05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)도 같은 방식으로 한 번만 적용한다. 테이블 두 개를 추가할 뿐 기존 테이블·CHECK를 바꾸지 않으며, 적용 후 CHECKIN_ENABLED를 활성화한다. 절차는 [검표 실행 안내](../backend/scripts/README-TicketCheckIn.md)를 따른다.
+[05-ticket-device-binding.sql](../backend/db/05-ticket-device-binding.sql)도 같은 방식으로 한 번만 적용한다. 테이블 두 개를 추가할 뿐 기존 테이블·CHECK를 바꾸지 않으며, [07-checkin-challenges.sql](../backend/db/07-checkin-challenges.sql)은 05 다음에 한 번만 적용하며 ticket_checkin_challenges 테이블 하나를 추가한다. 05와 07을 모두 적용한 뒤 CHECKIN_ENABLED를 활성화한다. 절차는 [검표 실행 안내](../backend/scripts/README-TicketCheckIn.md)를 따른다.
 
 적용 전 실제 DB 이름·기존 테이블·CHECK·백업을 확인하고 쓰기 작업을 중지한다. DDL은 개별 자동 commit되며 CHECK 교체는 메타데이터 잠금을 얻는다. 일부 실패 시 자동 재실행·임의 복구하지 말고 현재 스키마를 먼저 확인한다. 이미 적용된 DB에 재실행하거나 기존 업무 데이터·BTS 스키마를 초기화하지 않는다. 적용 후 BOOKING_ATTEMPTS_ENABLED를 명시적으로 활성화한다.
