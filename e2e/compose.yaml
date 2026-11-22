@@ -51,8 +51,11 @@ services:
       - ../backend/db/02-booking-support.sql:/docker-entrypoint-initdb.d/30-booking-support.sql:ro
       - ../backend/db/03-seat-concurrency.sql:/docker-entrypoint-initdb.d/40-seat-concurrency.sql:ro
       - ../backend/db/04-booking-attempts.sql:/docker-entrypoint-initdb.d/50-booking-attempts.sql:ro
+      # #53 QR 검표 시나리오: 기기 바인딩과 검표 챌린지 테이블
+      - ../backend/db/05-ticket-device-binding.sql:/docker-entrypoint-initdb.d/60-ticket-device-binding.sql:ro
+      - ../backend/db/07-checkin-challenges.sql:/docker-entrypoint-initdb.d/70-checkin-challenges.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", 'MYSQL_PWD=demo-e2e-only mysql -h127.0.0.1 -udemo_e2e demo_ticketing_db -e "SELECT 1 FROM booking_attempt_events LIMIT 1" >/dev/null 2>&1']
+      test: ["CMD-SHELL", 'MYSQL_PWD=demo-e2e-only mysql -h127.0.0.1 -udemo_e2e demo_ticketing_db -e "SELECT 1 FROM ticket_checkin_challenges LIMIT 1" >/dev/null 2>&1']
       start_period: 30s
       interval: 3s
       timeout: 5s
