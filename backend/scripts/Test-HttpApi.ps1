@@ -35,7 +35,7 @@ try {
         if ((($concert.PSObject.Properties.Name | Sort-Object) -join ',') -cne $concertKeys) { throw 'Concert field mismatch.' }
         if ($concert.id -cne $id -or $concert.priceFrom -ne 99000 -or $concert.startAt -notmatch 'Z$') { throw 'Concert identity/price/time mismatch.' }
         $seats = (Invoke-Check GET ('/api/v1/concerts/'+$id+'/seats') 200).data
-        if (@($seats).Count -ne 96 -or $seats[0].id -cne 'A-01' -or $seats[95].id -cne 'H-12') { throw 'Seat count/order mismatch.' }
+        if (@($seats).Count -ne 700 -or $seats[0].id -cne 'A-01' -or $seats[699].id -cne 'Y-28') { throw 'Seat count/order mismatch.' }
         foreach ($seat in $seats) {
             if ((($seat.PSObject.Properties.Name | Sort-Object) -join ',') -cne $seatKeys) { throw 'Seat field mismatch.' }
             if ($seat.status -cne 'AVAILABLE' -or $seat.heldByMe -ne $false) { throw 'Unexpected initial seat state.' }

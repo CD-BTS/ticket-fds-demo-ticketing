@@ -31,15 +31,15 @@ export default function SeatMap({ seats, selected, onToggle, disabled }: Props) 
                   aria-label={`${s.id} ${s.grade}석 ${s.status === 'AVAILABLE' ? '선택 가능' : '선택 불가'}`}
                   title={`${s.id} · ${s.grade} · ${s.price.toLocaleString()}원`}
                   onClick={() => onToggle(s)}
-                >
-                  {s.number}
-                </button>
+                />
               )
             })}
         </div>
       ))}
       <ul className="legend">
-        <li><i className="seat-sample seat-available" />선택 가능</li>
+        <li><i className="seat-sample seat-available grade-VIP" />VIP</li>
+        <li><i className="seat-sample seat-available grade-R" />R</li>
+        <li><i className="seat-sample seat-available grade-S" />S</li>
         <li><i className="seat-sample seat-selected" />내 선택</li>
         <li><i className="seat-sample seat-held" />선점됨</li>
         <li><i className="seat-sample seat-booked" />예매 완료</li>

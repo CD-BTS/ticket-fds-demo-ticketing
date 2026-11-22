@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { attemptsEnabled, clearAttempt, getAttempt, reportStage, startAttempt, type Attempt } from '../api/bookingAttempts'
+import { attemptsEnabled, clearAttempt, getAttempt, isTerminal, reportStage, startAttempt, type Attempt } from '../api/bookingAttempts'
 import { ticketing } from '../api/ticketing'
 import { ApiError } from '../api/client'
 import type { Concert } from '../api/types'
@@ -28,7 +28,7 @@ function Gate({ concertId }: { concertId: string }) {
       return getAttempt(userId, concertId)
     }).then(a => {
       if (!alive) return
-      if (a && !['ABANDONED', 'EXPIRED', 'FAILED'].includes(a.status) && a.stage !== 'COMPLETED') {
+      if (a && !isTerminal(a)) {
         setAttempt(a)
         if (a.holdId) nav(`/concerts/${concertId}/payment`, { replace: true })
       } else if (a) clearAttempt(userId, concertId)
@@ -42,7 +42,8 @@ function Gate({ concertId }: { concertId: string }) {
     try {
       const active = await attemptsEnabled();setEnabled(active)
       if (active) {
-        await startAttempt(userId, concertId)
+        // 진행 상태 확인에 실패해 끝난 시도의 기록이 남아 있었다면, 그 시도를 이어 쓰지 않고 새 시도로 시작한다.
+        if (isTerminal(await startAttempt(userId, concertId))) { clearAttempt(userId, concertId);await startAttempt(userId, concertId) }
         const current = await getAttempt(userId, concertId)
         if (current?.holdId) nav(`/concerts/${concertId}/payment`, { replace: true })
         else setAttempt(current)

@@ -5,6 +5,7 @@ const vm = require('node:vm')
 const { webcrypto } = require('node:crypto')
 const ts = require('typescript')
 
+class ApiError extends Error { constructor(status) { super(`HTTP ${status}`); this.status = status } }
 function browser(storage = new Map(), calls = [], handler = null) {
   const exports = {}
   const source = fs.readFileSync('src/api/bookingAttempts.ts', 'utf8')
@@ -12,7 +13,7 @@ function browser(storage = new Map(), calls = [], handler = null) {
   vm.runInNewContext(js, {
     exports, Date, setTimeout, TextEncoder, crypto: webcrypto,
     sessionStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
-    require: () => ({ ApiError: class ApiError extends Error {}, USE_MOCK_TICKETING: false, request: async (...args) => { calls.push(args); if (handler) return handler(...args); return { stage: 'SEAT_HOLD', status: 'SUCCEEDED', sequence: 3 } } }),
+    require: () => ({ ApiError, USE_MOCK_TICKETING: false, request: async (...args) => { calls.push(args); if (handler) return handler(...args); return { stage: 'SEAT_HOLD', status: 'SUCCEEDED', sequence: 3 } } }),
   })
   return { api: exports, storage, calls }
 }
@@ -94,4 +95,42 @@ test('failed start retains identity and rejects instead of continuing', async ()
   await assert.rejects(b.api.startAttempt('alice', 'c1'), /start failed/)
   assert.equal(b.calls[0][1], b.calls[1][1])
   assert.equal(JSON.stringify(b.calls[0][2]), JSON.stringify(b.calls[1][2]))
+})
+
+// #58: 결제 화면은 열릴 때 상태 조회(getAttempt)와 PAYMENT 기록(reportStage)을 같은 틱에 시작한다.
+test('a stage reported while another flush is settling is still sent before it resolves', async () => {
+  const b = browser();await b.api.startAttempt('alice', 'c1')
+  const page = browser(b.storage)
+  const lookup = page.api.getAttempt('alice', 'c1')
+  await page.api.reportStage('alice', 'c1', 'PAYMENT')
+  const sent = page.calls.filter(call => call[0] === 'POST')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0][2].stage, 'PAYMENT')
+  assert.equal(page.api.localAttempt('alice', 'c1').pending.length, 0)
+  await lookup
+})
+test('a failed flush does not block the next one, which resends the stored stage', async () => {
+  const b = browser();await b.api.startAttempt('alice', 'c1')
+  let online = false
+  const page = browser(b.storage, [], async () => { if (!online) throw new Error('offline'); return {} })
+  const first = assert.rejects(page.api.reportStage('alice', 'c1', 'PAYMENT'), /offline/)
+  const second = assert.rejects(page.api.flushStages('alice', 'c1'), /offline/)
+  await first;await second
+  online = true
+  await page.api.flushStages('alice', 'c1')
+  assert.equal(page.api.localAttempt('alice', 'c1').pending.length, 0)
+  assert.equal(new Set(page.calls.map(call => call[2].transitionId)).size, 1)
+})
+test('stages left for a finished attempt are dropped only after the server confirms it is terminal', async () => {
+  const b = browser();await b.api.startAttempt('alice', 'c1')
+  const offline = browser(b.storage, [], async () => { throw new Error('offline') })
+  await assert.rejects(offline.api.reportStage('alice', 'c1', 'PAYMENT', 'ABANDONED'), /offline/)
+  let server = { stage: 'PAYMENT', status: 'ENTERED' }
+  const later = browser(b.storage, [], async method => { if (method === 'POST') throw new ApiError(409); return server })
+  await assert.rejects(later.api.getAttempt('alice', 'c1'), /409/)
+  assert.equal(later.api.localAttempt('alice', 'c1').pending.length, 1)
+  server = { stage: 'SEAT_HOLD', status: 'EXPIRED' }
+  const state = await later.api.getAttempt('alice', 'c1')
+  assert.equal(later.api.isTerminal(state), true)
+  assert.equal(later.api.localAttempt('alice', 'c1').pending.length, 0)
 })

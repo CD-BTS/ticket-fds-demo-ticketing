@@ -3,8 +3,9 @@ import { operationTransition } from './bookingAttempts'
 import type { Booking, Concert, Seat, SeatGrade, SeatHold, TicketQr } from './types'
 
 const HOLD_MS = 5 * 60 * 1000
-const ROWS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
-const SEATS_PER_ROW = 12
+// backend/db/seed.sql 과 같은 배치: 25행(A~Y) x 28석 = 700석
+const ROWS = 'ABCDEFGHIJKLMNOPQRSTUVWXY'.split('')
+const SEATS_PER_ROW = 28
 
 export interface TicketingApi {
   listConcerts(): Promise<Concert[]>
