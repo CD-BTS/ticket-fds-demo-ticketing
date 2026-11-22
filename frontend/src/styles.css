@@ -1318,6 +1318,10 @@ section.card {
 .card-row-direct { border-style: dashed; }
 .direct-form { margin-top: 8px; padding: 14px 16px 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; }
 .direct-form .field { margin-top: 0; }
+.card-row-select.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+.card-row-select:has(input:disabled) { opacity: .5; cursor: not-allowed; }
+.card-row-select input { margin: 0; align-self: center; accent-color: var(--accent); }
+.pay-submit { margin-bottom: 8px; }
 
 /* 동적 QR (티켓별 기기 바인딩) */
 .qr-tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
