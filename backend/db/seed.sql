@@ -1,5 +1,8 @@
 -- Add missing demo rows only. Never updates/deletes existing data or resets seat state.
 USE demo_ticketing_db;
+-- 이 파일은 UTF-8이다. docker-entrypoint-initdb.d 의 mysql 클라이언트는 기본 문자셋이 latin1이라
+-- 선언이 없으면 한글(공연장·소개 문구)이 이중 인코딩되어 저장된다. 이미 깨진 DB는 08-fix-seed-encoding.sql 로 고친다.
+SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 START TRANSACTION;
 
