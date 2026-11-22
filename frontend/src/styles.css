@@ -565,8 +565,8 @@ section.card {
     display: flex;
     justify-content: center;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
+    gap: 4px;
+    margin-bottom: 4px;
     min-width: max-content;
 }
 
@@ -578,49 +578,53 @@ section.card {
     font-weight: 700;
 }
 
+/* 좌석은 번호 없이 등급 색으로 채운 작은 칸으로 표시한다. 좌석 번호는 선택 목록·결제·예매 내역에서 보여 준다. */
+/* 좌석 칸 색: 등급 색(--vip/--r/--s)과 같은 계열이지만 채도를 낮춰 넓게 칠해도 눈이 편하게 한다 */
+.seatmap {
+    --seat-vip: #c9ad74;
+    --seat-r: #7f94c4;
+    --seat-s: #7bae9a;
+}
+
 .seat {
-    width: 30px;
-    height: 30px;
-    border-radius: 7px;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
     border: 1px solid transparent;
-    font-size: 11px;
-    font-weight: 600;
     cursor: pointer;
     padding: 0;
     transition: transform .08s, background .15s;
 }
 
     .seat:hover:not(:disabled) {
-        transform: scale(1.1);
+        transform: scale(1.2);
     }
 
 .seat-available, .seat-mine {
-    background: #fff;
-    color: #485365;
+    background: #cdd5e0;
     border-color: #cdd5e0;
 }
 
-.seat-mine {
-    background: var(--accent-soft);
-    color: var(--accent);
-}
-
     .seat-available.grade-VIP, .seat-mine.grade-VIP {
-        border-color: var(--vip);
+        background: var(--seat-vip);
+        border-color: var(--seat-vip);
     }
 
     .seat-available.grade-R, .seat-mine.grade-R {
-        border-color: var(--r);
+        background: var(--seat-r);
+        border-color: var(--seat-r);
     }
 
     .seat-available.grade-S, .seat-mine.grade-S {
-        border-color: var(--s);
+        background: var(--seat-s);
+        border-color: var(--seat-s);
     }
 
 .seat-selected {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent-dark);
+    /* 등급 색과 섞이지 않도록 선택한 좌석은 진한 회색과 테두리 고리로 구분한다 */
+    background: #5b6472;
+    border-color: #5b6472;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 3px #5b6472;
 }
 
 .seat-held {
@@ -772,9 +776,8 @@ section.card {
     }
 
     .seat {
-        width: 26px;
-        height: 26px;
-        font-size: 10px;
+        width: 18px;
+        height: 18px;
     }
 }
 
