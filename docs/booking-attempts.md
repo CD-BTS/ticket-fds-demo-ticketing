@@ -41,7 +41,7 @@ booking_attempts는 현재 stage/status/sequence와 nullable hold/booking을 저
 
 ## 브라우저 재전송
 
-브라우저는 사용자·공연별 sessionStorage에 attemptId·클릭 시각·transition ID·미확정 stage 요청을 전송 전에 저장한다. 동일 브라우저 탭의 새로고침과 응답 유실에는 같은 body로 재시도한다. 네트워크 오류·5xx·429는 최대 3회, 100/200ms 간격으로 시도하며 그 밖의 4xx를 자동 반복하지 않는다. 실패한 전이는 저장소에 남겨 다음 조회에서 다시 전송한다.
+브라우저는 사용자·공연별 sessionStorage에 attemptId·클릭 시각·transition ID·미확정 stage 요청을 전송 전에 저장한다. 동일 브라우저 탭의 새로고침과 응답 유실에는 같은 body로 재시도한다. 네트워크 오류·5xx·429는 최대 3회, 100/200ms 간격으로 시도하며 그 밖의 4xx를 자동 반복하지 않는다. 실패한 전이는 저장소에 남겨 다음 조회에서 다시 전송한다. 같은 attempt의 전송은 한 번에 하나씩 이어서 실행하며, 전송 중에 추가된 단계도 그 호출이 끝나기 전에 보낸다(#58: 결제 화면에서 PAYMENT/ENTERED가 미전송으로 남던 문제). 남은 단계가 409로 거부되면 서버 상태를 조회해 attempt가 terminal일 때만 그 단계를 정리하고, 다음 예매는 새 attemptId로 시작한다.
 
 CAPTCHA 검증은 challenge/입력 SHA-256 digest에 transition UUID를 연결한다. 답 원문을 sessionStorage에 저장하지 않는다. 원래 grant TTL을 넘겨 재전송하더라도 유효 기간을 연장하거나 grant를 재발급하지 않는다.
 
