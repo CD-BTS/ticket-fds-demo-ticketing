@@ -72,7 +72,7 @@ docker compose --env-file backend/.env -f backend/compose.yaml up -d --wait --wa
 | compose.yaml | 독립 컨테이너·포트·볼륨·계정·healthcheck |
 | db/schema.sql | 기존 핵심 8개 테이블 생성 |
 | db/02-booking-support.sql | 세션/Outbox 2개 추가. 기존 볼륨에도 -Apply로 적용 |
-| db/seed.sql | 초기 볼륨에서 공연 3건/공연별 96석 삽입, 재실행도 누락 행만 추가 |
+| db/seed.sql | 초기 볼륨에서 공연 3건/공연별 360석(A~T 20행×18석) 삽입, 재실행도 누락 행만 추가 |
 | db/verify.sql | 정확한 합계·공연별 수량·가격·좌석 코드·제약 조회 |
 | db/00-create-database.sql | Compose 밖에서 수동 구성할 때의 선택 SQL. Compose에서는 MYSQL_DATABASE가 DB 생성 |
 
@@ -106,7 +106,7 @@ stop/start 또는 down/up은 명명된 볼륨 데이터를 보존한다. 볼륨 
 
 ## Seed 결정 사항
 
-- FE 공연 ID c1/c2/c3, A-01~H-12 좌석 ID 유지
+- FE 공연 ID c1/c2/c3, A-01~T-18 좌석 ID 유지
 - 각 공연 VIP(A/B) 24석×154,000원, R(C~E) 36석×132,000원, S(F~H) 36석×99,000원
 - 모든 공연 priceFrom=99,000원. FE Mock의 c2=88,000원/c3=110,000원 불일치를 새 DB seed에서 바로잡음. frontend는 수정하지 않음
 - 288석 모두 AVAILABLE. Mock의 임의 BOOKED는 예매 원장 없이 복제하지 않음
