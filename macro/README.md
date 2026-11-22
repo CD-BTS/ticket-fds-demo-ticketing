@@ -72,7 +72,7 @@ node macro.js --user macro01 --mode human --runs 3 --repeat 5 --out continuous.c
 
 - **보안 확인(CAPTCHA)**: 산술 문제(`CAPTCHA_MODE=mock`)는 매크로가 풉니다. hCaptcha 위젯은 풀 수 없어 `CAPTCHA_BLOCKED`로 기록하고 멈춥니다.
   데이터를 만들 때는 `CAPTCHA_MODE`를 `disabled` 또는 `mock`으로, 계정은 정책 계정(`susp01` 등)이 아닌 새 ID로 사용하세요.
-- **좌석**: 예매할 때마다 실제 좌석이 선점·결제되어 줄어듭니다. 공연마다 360석(A~T 20행×18석)입니다. 부족하면 `--concert`로 공연을 바꾸거나 `--cancel`/`--cancel-all`로 좌석을 되돌립니다.
+- **좌석**: 예매할 때마다 실제 좌석이 선점·결제되어 줄어듭니다. 공연마다 700석(A~Y 25행×28석)입니다. 부족하면 `--concert`로 공연을 바꾸거나 `--cancel`/`--cancel-all`로 좌석을 되돌립니다.
   취소하면 `CANCEL` 이벤트가 데이터에 남으므로, 예매 행동만 보고 싶다면 수집이 끝난 뒤에 취소하세요.
 - **예매 시도 기록**: 단계별 기록(`booking_attempts`)은 백엔드의 `BOOKING_ATTEMPTS_ENABLED=true`와 `db/04-booking-attempts.sql` 적용이 필요합니다.
 - **대기열**: 서버 대기열 때문에 좌석 화면까지 걸리는 시간(`ms_to_seatmap`)에 대기 시간이 포함됩니다. 매크로 속도는 `ms_hold - ms_to_seatmap`(좌석 선택~선점 구간)로 보세요.

@@ -40,13 +40,13 @@ class ConcertApiMySqlTests {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.data.priceFrom").value(99000));
             mvc.perform(get("/api/v1/concerts/" + id + "/seats"))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data", hasSize(360)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data", hasSize(700)))
                     .andExpect(jsonPath("$.data[0].id").value("A-01"))
-                    .andExpect(jsonPath("$.data[359].id").value("T-18"))
+                    .andExpect(jsonPath("$.data[699].id").value("Y-28"))
                     .andExpect(jsonPath("$.data[0].heldByMe").value(false));
-            assertEquals(36L, countGrade(id, "VIP"));
-            assertEquals(54L, countGrade(id, "R"));
-            assertEquals(270L, countGrade(id, "S"));
+            assertEquals(56L, countGrade(id, "VIP"));
+            assertEquals(84L, countGrade(id, "R"));
+            assertEquals(560L, countGrade(id, "S"));
         }
         Long mismatch = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM concerts c WHERE c.price_from <>
