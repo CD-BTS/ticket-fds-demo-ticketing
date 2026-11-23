@@ -1,4 +1,5 @@
 import type { Seat } from '../api/types'
+import type { CSSProperties } from 'react'
 
 interface Props {
   seats: Seat[]
@@ -9,8 +10,9 @@ interface Props {
 
 export default function SeatMap({ seats, selected, onToggle, disabled }: Props) {
   const rows = Array.from(new Set(seats.map((s) => s.row)))
+  const cols = Math.max(1, ...rows.map((row) => seats.filter((s) => s.row === row).length))
   return (
-    <div className="seatmap" role="group" aria-label="좌석 배치도">
+    <div className="seatmap" role="group" aria-label="좌석 배치도" style={{ '--cols': cols } as CSSProperties}>
       <div className="stage">STAGE</div>
       {rows.map((row) => (
         <div className="seat-row" key={row}>
