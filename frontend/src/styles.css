@@ -1352,3 +1352,65 @@ section.card {
 .gate-history li { padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
 .gate-history .is-ok b { color: var(--ok); }
 .gate-history .is-no b { color: var(--danger); }
+
+/* ===== 모바일 화면 보정 (스마트폰) ===== */
+/* 좌석 배치도는 PC와 같은 크기·비율을 유지하고 옆으로 스크롤한다(실제 예매 사이트와 동일). */
+.grid { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+.seat { touch-action: manipulation; }
+
+@media (max-width: 860px) {
+  .seatmap { --seat-size: 26px; /* 좌석 크기: 이 숫자만 바꾸면 된다 */ -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; padding: 22px 16px; }
+  /* 좌석 줄은 PC와 같은 크기로 고정하고 옆으로 스크롤한다 */
+  .seat-row { justify-content: flex-start; gap: 6px; margin-bottom: 6px; min-width: max-content; }
+  .row-label { width: 20px; font-size: 11px; flex: 0 0 auto; }
+  .seat { width: var(--seat-size, 26px); height: var(--seat-size, 26px); flex: 0 0 auto; border-radius: 7px; font-size: 10px; letter-spacing: normal; }
+  /* 무대·범례는 스크롤 폭을 늘리지 않고, 좌우로 움직여도 화면 안에 붙어 있게 한다 */
+  .stage { position: sticky; left: 0; width: auto; max-width: none; }
+  .legend { position: sticky; left: 0; gap: 8px 14px; }
+  /* 좌석이 길게 이어지므로 선택 정보·결제 버튼은 화면 아래에 붙여 둔다 */
+  .panel { position: sticky; bottom: 0; top: auto; z-index: 5; margin: 0 -14px -48px; border-radius: 14px 14px 0 0; border-width: 1px 0 0; padding: 14px 14px 16px; box-shadow: 0 -6px 18px #24334a14; }
+  .panel .picked { max-height: 92px; overflow-y: auto; }
+  .panel .total { margin-top: 10px; padding-top: 10px; }
+}
+
+@media (max-width: 560px) {
+  body { font-size: 15px; }
+  .container { padding: 18px 14px 56px; }
+  .page-title { font-size: 22px; margin-bottom: 16px; }
+  section.card { padding: 18px 16px; }
+  .detail-hero { padding: 20px 18px; }
+  .detail-hero h1 { font-size: 20px; }
+  .poster { height: 128px; }
+  /* 로그인: 상자를 화면 위쪽으로 올린다(가운데 정렬 해제) */
+  .login-wrap { place-items: start center; padding-top: 9vh; }
+  .login-card { padding: 24px 20px; }
+  /* iOS 는 글자 크기 16px 미만 입력창을 누르면 화면을 확대해 버린다 */
+  input, .field input { font-size: 16px; }
+  .field input { height: 44px; }
+  .btn { min-height: 44px; }
+  .btn-sm { min-height: 36px; }
+  .nav a { height: 36px; padding: 0 8px; font-size: 13px; }
+  .brand { font-size: 14px; }
+  .header-inner { height: 56px; gap: 4px; }
+  /* 마이페이지 예매 카드: 내용 아래로 버튼을 가로로 배치 */
+  .booking { flex-direction: column; gap: 12px; padding: 16px; }
+  .booking-actions { flex-direction: row; width: 100%; }
+  .booking-actions .btn { flex: 1; }
+  .cards-head { flex-wrap: wrap; }
+  .saved-cards, .card-form { max-width: none; }
+  .pay-card { padding: 18px 16px; }
+  .pay-actions { flex-direction: column; width: 100%; }
+  .pay-actions .btn { width: 100%; }
+  .card-row { padding: 14px; min-height: 52px; }
+  .modal { padding: 20px 16px; }
+  .waiting { margin-top: 20px; }
+  .waiting-title { font-size: 26px; }
+  .waiting-number { font-size: 80px; }
+  .waiting input { max-width: none; }
+}
+
+@media (max-width: 360px) {
+  .brand-dot { display: none; }
+  .nav a { padding: 0 6px; font-size: 12px; }
+  .who .btn-sm { padding: 0 8px; }
+}
