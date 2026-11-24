@@ -325,7 +325,7 @@ if (Want 'checkin') {
     Check '관리자 API: 전체 이력(최신순)의 첫 항목이 CHECK_IN' (@($unfiltered.content)[0].eventType -eq 'CHECK_IN') "총 $(@($unfiltered.content).Count)건"
     $svc = (Bts GET "/users/$btsUser/events?eventType=CHECK_IN").Data
     Check '서비스 API: 사용자별 이벤트 조회에서 CHECK_IN 조회' (@($svc.content).Count -eq 1 -and @($svc.content)[0].ticketId -eq $ticket) ''
-    $summary = Bts GET '/dashboard/summary?serviceId=demo-ticketing' -Admin -Expect @(200, 401, 403, 404)
+    $summary = Bts GET '/admin/summary?serviceId=demo-ticketing' -Admin -Expect @(200, 401, 403, 404)
     Check '관리자 API: 대시보드 요약 eventsByType.CHECK_IN 집계' ($summary.Status -eq 200 -and [int]$summary.Data.eventsByType.CHECK_IN -ge 1) "status=$($summary.Status) CHECK_IN=$($summary.Data.eventsByType.CHECK_IN)"
     $joined = (Bts GET "/admin/concerts/$concert/users?serviceId=demo-ticketing" -Admin).Data
     Check '관리자 API: 공연별 참여 사용자에 표시' (@($joined.content | ForEach-Object { $_.user.userId }) -contains $btsUser) ''
@@ -335,8 +335,61 @@ if (Want 'checkin') {
     $detail = (Bts GET "/admin/users/$btsUser" -Admin).Data
     Write-Output "[INFO] BTS booking_history 행 수(이 사용자) = $history  (CHECK_IN → 관람 이력 적재 미구현, 후속 이슈)"
     Write-Output "[INFO] 관리자 사용자 상세 최상위 필드: $((@($detail.PSObject.Properties.Name)) -join ',')"
-    $adminSummary = Bts GET '/admin/summary?serviceId=demo-ticketing' -Admin -Expect @(200, 400, 401, 403, 404, 500)
-    Write-Output "[INFO] 프론트엔드가 호출하는 GET /api/v1/admin/summary 응답 상태 = $($adminSummary.Status)"
+}
+
+# ---------------------------------------------------------------- 9. AI 이상도 평가 → Credit → 정책 (#62, admin #40)
+if (Want 'ai') {
+    if (-not $script:E2E.aiUrl) {
+        Write-Output '[SKIP] ai: Start-E2E.ps1 -AiUrl <ticket-fds-ai 주소> 로 기동해야 실행됩니다.'
+    } else {
+        # 정상 사용자: 시도 1번 후 좌석을 보다가 포기. e2e는 모든 예매가 127.0.0.1·공용 테스트 결제수단으로 들어와
+        # 예매를 하면 ipBookingDensity·cardReuseCount가 다른 시나리오 사용자 수만큼 커지므로 예매는 하지 않는다.
+        $normal = "e2e-ai-n-$runId"; $tn = Login $normal
+        $a = New-Uuid
+        Demo PUT "/concerts/c1/booking-attempts/$a" @{} $tn | Out-Null
+        Demo POST '/concerts/c1/queue' $null $tn @{ 'X-Booking-Attempt' = $a } | Out-Null
+        Demo POST "/booking-attempts/$a/transitions" @{ transitionId = (New-Uuid); stage = 'SEAT_SELECTION'; status = 'ENTERED' } $tn | Out-Null
+        Demo POST "/booking-attempts/$a/transitions" @{ transitionId = (New-Uuid); stage = 'SEAT_SELECTION'; status = 'ABANDONED' } $tn | Out-Null
+
+        # 매크로형: 짧고 일정한 간격(약 0.15초 + 요청 시간)으로 시도 12번을 시작하고 곧바로 포기
+        $macro = "e2e-ai-m-$runId"; $tm = Login $macro
+        for ($i = 0; $i -lt 12; $i++) {
+            $x = New-Uuid
+            Demo PUT "/concerts/c2/booking-attempts/$x" @{} $tm | Out-Null
+            Demo POST "/booking-attempts/$x/transitions" @{ transitionId = (New-Uuid); stage = 'STARTED'; status = 'ABANDONED' } $tm | Out-Null
+            Start-Sleep -Milliseconds 150
+        }
+
+        Wait-Delivered @($normal, $macro) | Out-Null
+        $nId = Get-BtsUserId $normal; $mId = Get-BtsUserId $macro
+        # 모든 이벤트가 BTS에 도착한 뒤, 마지막 이벤트까지 평가에 반영될 때까지 기다린다 (AI_POLL_MS=5000)
+        Wait-Until {
+            $c = @(Invoke-Sql bts "SELECT c.user_id FROM risk_assessment_cursor c WHERE c.user_id IN ('$nId','$mId') AND c.last_event_id = (SELECT MAX(e.event_id) FROM behavior_event e WHERE e.user_id = c.user_id)")
+            $c.Count -eq 2
+        } 120 'AI 평가에 마지막 이벤트 반영' | Out-Null
+        Start-Sleep -Seconds 2  # 커밋 후 Credit 재산출(AFTER_COMMIT) 반영 대기
+
+        $latest = "SELECT a.anomaly_score s, a.model_version v FROM risk_assessment a WHERE a.user_id='{0}' ORDER BY a.assessment_id DESC LIMIT 1"
+        $nScore = @(Invoke-Sql bts ($latest -f $nId))[0]; $mScore = @(Invoke-Sql bts ($latest -f $mId))[0]
+        $cur = @(Invoke-Sql bts "SELECT user_id, last_status FROM risk_assessment_cursor WHERE user_id IN ('$nId','$mId')")
+        Check 'AI: 두 사용자 모두 평가 OK (cursor)' (-not ($cur | Where-Object last_status -ne 'OK') -and $cur.Count -eq 2) (($cur.last_status) -join ',')
+        $nf = (Bts GET "/admin/users/$nId/features" -Admin).Data
+        Check 'AI: 정상 사용자 이상 점수 < 0.5' ($nScore -and [double]$nScore.s -lt 0.5) "score=$($nScore.s) (bookingCount=$($nf.bookingCount), cardReuseCount=$($nf.cardReuseCount), ipBookingDensity=$($nf.ipBookingDensity))"
+        Check 'AI: 매크로형 사용자 이상 점수 >= 0.5 (탐지 임계값)' ($mScore -and [double]$mScore.s -ge 0.5) "score=$($mScore.s) model=$($mScore.v)"
+        Check 'AI: 매크로형 점수 > 정상 사용자 점수' ($nScore -and $mScore -and [double]$mScore.s -gt [double]$nScore.s) "macro=$($mScore.s) normal=$($nScore.s)"
+        $credit = "SELECT c.credit_score s, c.tier t FROM user_credit c WHERE c.user_id='{0}'"
+        $nCredit = @(Invoke-Sql bts ($credit -f $nId))[0]; $mCredit = @(Invoke-Sql bts ($credit -f $mId))[0]
+        Check 'Credit: 정상 사용자 NORMAL 유지' ($nCredit.t -eq 'NORMAL') "credit=$($nCredit.s) tier=$($nCredit.t)"
+        Check 'Credit: 매크로형 사용자 Credit 하락·NORMAL 아님' ([int]$mCredit.s -lt [int]$nCredit.s -and $mCredit.t -ne 'NORMAL') "credit=$($mCredit.s) tier=$($mCredit.t)"
+        $hist = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM credit_history WHERE user_id='$mId' AND reason='AI 이상도 평가 반영'").c
+        Check 'Credit: AI 평가 반영 이력(credit_history) 기록' ($hist -ge 1) "$hist건"
+        $detail = (Bts GET "/admin/users/$mId" -Admin).Data.user
+        Check '관리자 API: 사용자 상세에 최신 이상 점수 표시' ([double]$detail.anomalyScore -eq [double]$mScore.s) "api=$($detail.anomalyScore)"
+
+        $q = Demo POST '/concerts/c3/queue' $null $tm -Expect @(200, 201, 403)
+        $decision = @(Invoke-Sql bts "SELECT action, anomaly_score_at_decision s FROM policy_decision WHERE user_id='$mId' AND context='QUEUE_JOIN' ORDER BY decision_id DESC LIMIT 1")[0]
+        Check '정책: 매크로형 사용자 대기열 입장에 AI 점수 반영 (ALLOW 아님)' ($decision.action -ne 'ALLOW' -and [double]$decision.s -ge 0.5) "action=$($decision.action) score=$($decision.s) demo=$($q.Status) $($q.Code)"
+    }
 }
 
 $script:Results | Format-Table -AutoSize | Out-String -Width 220

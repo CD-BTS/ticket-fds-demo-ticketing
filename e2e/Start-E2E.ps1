@@ -9,7 +9,9 @@ param(
     [int]$DemoPort = 18081,
     [switch]$SkipCompose,
     # 장애 시나리오에서 BTS만 다시 띄울 때: -Only bts -SkipCompose (기존 키 재사용)
-    [ValidateSet('all', 'bts', 'demo')][string]$Only = 'all'
+    [ValidateSet('all', 'bts', 'demo')][string]$Only = 'all',
+    # ticket-fds-ai 주소 (예: http://127.0.0.1:8000). 주면 BTS의 AI 이상도 평가를 5초 주기로 켠다 (#62, admin #40).
+    [string]$AiUrl = ''
 )
 $ErrorActionPreference = 'Stop'
 $AdminRepo = (Resolve-Path $AdminRepo).Path
@@ -37,6 +39,7 @@ if ($Only -ne 'all' -and (Test-Path $keyFile)) {
     $keys = Get-Content -Raw $keyFile | ConvertFrom-Json
     $serviceKey = $keys.serviceKey; $adminKey = $keys.adminKey
     $gateKey = $keys.gateKey; $ticketSecret = $keys.ticketSecret
+    if (-not $AiUrl -and $keys.aiUrl) { $AiUrl = $keys.aiUrl }  # 장애 시나리오의 BTS 재기동도 AI 설정 유지
 } else {
     $serviceKey = 'e2e-svc-' + (New-TestKey)
     $adminKey = 'e2e-admin-' + (New-TestKey)
@@ -49,6 +52,7 @@ if ($Only -ne 'all' -and (Test-Path $keyFile)) {
         serviceId = 'demo-ticketing'; serviceKey = $serviceKey; adminKey = $adminKey
         gateKey = $gateKey; ticketSecret = $ticketSecret
         btsUrl = "http://localhost:$BtsPort"; demoUrl = "http://localhost:$DemoPort"
+        aiUrl = $AiUrl
     }
     $keys | ConvertTo-Json | Set-Content -Encoding UTF8 $keyFile
 }
@@ -60,6 +64,11 @@ $btsEnv = @{
     DB_USERNAME = 'bts_e2e'; DB_PASSWORD = 'bts-e2e-only'; JPA_SHOW_SQL = 'false'
     BTS_API_KEY_HASHES = (@{ 'demo-ticketing' = (Get-Sha256Hex $serviceKey) } | ConvertTo-Json -Compress)
     BTS_ADMIN_API_KEYS = ('[{"hash":"' + (Get-Sha256Hex $adminKey) + '","allServices":true,"services":[]}]')
+}
+if ($AiUrl) {
+    $btsEnv.AI_ENABLED = 'true'; $btsEnv.AI_BASE_URL = $AiUrl; $btsEnv.AI_POLL_MS = '5000'
+} else {
+    $btsEnv.AI_ENABLED = 'false'
 }
 # --- Demo ---
 $demoEnv = @{
