@@ -139,6 +139,7 @@ Compose가 healthy가 된 뒤 실행한다.
 | BTS_SERVICE_ID | 기본 demo-ticketing은 로컬 namespace. 실제 발급 서비스 ID를 사용자 생성 전에 설정 |
 | BTS_API_KEY | 서버 전용 원문 비밀, .env/런타임에서만 관리 |
 | DEMO_JOBS_ENABLED | true. 만료 정리와 Outbox 작업 활성화 |
+| TRUSTED_PROXIES | 비어 있음(기본): 연결 peer IP만 사용. 리버스 프록시 뒤에 배포하면 프록시 주소·CIDR을 쉼표로 지정(예: `172.18.0.0/16`). 아래 "클라이언트 IP" 참고 |
 
 JDBC URL은 localhost:3308/demo_ticketing_db다. DB명은 고정이고 DB_URL/DB_NAME override는 제공하지 않는다. Compose의 MySQL은 localhost에만 포트를 게시한다. BTS 호출 구조·서비스 인증키 정책과 Java API/DTO는 이번 DB 분리로 변경하지 않았다.
 
@@ -173,7 +174,19 @@ mysqlTest는 demo DB catalog/10개 테이블·기존 조회와 예약·BTS 계�
 4. /bookings/{id}/cancel은 전체 취소이며 반복해도 같은 결과다. /bookings/me는 본인 이력만 반환한다.
 5. 이전으로 이동 시 DELETE /seat-holds/{id}. 만료/반복 해제도200, 다른 사용자 자원403.
 
-선점 교체는 원자적이며 같은 선택 재요청은 만료를 연장하지 않는다. 만료(expiry<=now)는410, 타인 점유409. 새 선점에서 정리하고 5초 작업도 복구한다. 정리 전에도 조회상 만료 좌석은 AVAILABLE이다. 총액은 hold item 가격으로 계산하고, 서버 소요 시간은 hold.created_at~confirmed_at, IP는 연결 peer만 사용한다. X-Forwarded-For/Forwarded는 신뢰 설정이 없어 무시한다.
+선점 교체는 원자적이며 같은 선택 재요청은 만료를 연장하지 않는다. 만료(expiry<=now)는410, 타인 점유409. 새 선점에서 정리하고 5초 작업도 복구한다. 정리 전에도 조회상 만료 좌석은 AVAILABLE이다. 총액은 hold item 가격으로 계산하고, 서버 소요 시간은 hold.created_at~confirmed_at, IP는 연결 peer만 사용한다. X-Forwarded-For/Forwarded는 TRUSTED_PROXIES가 없으면 무시한다.
+
+### 클라이언트 IP (리버스 프록시 뒤 배포, #64)
+
+예매 이벤트의 `ipAddress`는 BTS의 AI Feature `ipBookingDensity`(같은 IP를 쓴 계정 수)에 쓰인다. 프록시 뒤에서 연결 peer만 쓰면 모든 사용자가 프록시 IP 하나로 기록되어 정상 사용자까지 의심 판정을 받는다.
+
+- `TRUSTED_PROXIES`에 프록시 주소·CIDR(IPv4/IPv6)을 쉼표로 지정한다. 연결 peer가 이 목록에 있을 때만 `X-Forwarded-For`를 읽는다.
+- `X-Forwarded-For`는 오른쪽(가장 가까운 hop)부터 읽어, 신뢰 프록시가 아닌 첫 주소를 클라이언트 IP로 쓴다. 클라이언트가 보낸 값 뒤에 프록시가 주소를 덧붙여도(nginx `$proxy_add_x_forwarded_for`) 앞쪽의 위조 값은 쓰이지 않는다.
+- IP 형식이 아닌 hop(호스트 이름, 포트 포함 값 등)을 만나면 거기서 멈추고 마지막으로 확인한 신뢰 hop을 쓴다. 호스트 이름은 DNS로 조회하지 않는다.
+- `Forwarded`(RFC 7239) 헤더는 읽지 않는다. 프록시는 `X-Forwarded-For`를 설정한다.
+- 잘못된 주소나 `/0`(모든 주소 신뢰)은 기동 시 거부한다.
+- Tomcat RemoteIpValve(`server.forward-headers-strategy=native`)는 쓰지 않는다. 기본 신뢰 범위가 모든 사설 대역이라 같은 사설망의 아무 호스트나 IP를 바꿀 수 있다. `server.forward-headers-strategy=none`은 그대로 둔다.
+- 신뢰 범위는 프록시 주소만큼 좁게 잡는다. Docker 네트워크 전체를 지정하면 같은 네트워크의 다른 컨테이너도 IP를 바꿀 수 있다.
 
 예매·좌석·티켓·Outbox는 한 트랜잭션이다. BTS 실패로 로컬 성공을 되돌리지 않으며 최초 요청 처리에서 외부 HTTP를 기다리지 않는다. Outbox는 고정 externalEventId/UTC 초/metadata를 저장하고 최초 전송 전에 사용자 UUID를 결합한 최종 payload를 한 번만 동결한다. worker 네트워크는 DB transaction 밖이다. 60초 lease로 중단 작업을 회수하고 동일 예매 BOOKING→CANCEL 순서를 지킨다.
 
