@@ -49,15 +49,31 @@ public class CaptchaService {
         catch(DataAccessException e){throw new ApiException(ResponseCode.SERVICE_UNAVAILABLE);}
     }
     public Challenge challenge(String concert,long user,PolicyDecisionClient.Action action){
+        return challenge(concert,user,action,null);
+    }
+    /** decisionId: 이 CAPTCHA를 요구한 BTS 정책 결정 (#67). challenge에 함께 저장해 검증 결과 기록까지 유지한다. */
+    public Challenge challenge(String concert,long user,PolicyDecisionClient.Action action,Long decisionId){
         enabled();String id=nonce();var problem=verifier.create();
         var result=call(List.of(queues.base(concert)+"captcha-challenge:"+id),"create",Long.toString(user),action.name(),
-                digest(problem.answer()),Long.toString(challengeTtl),Integer.toString(attempts));
+                digest(problem.answer()),Long.toString(challengeTtl),Integer.toString(attempts),decisionId==null?"":decisionId.toString());
         return new Challenge(id,problem.question(),Instant.ofEpochMilli(Long.parseLong(result.get(0).toString())),verifier.provider(),verifier.siteKey());
     }
+    /**
+     * 검증 결과 (#67). grant가 null이면 CAPTCHA_INVALID다.
+     * decisionId는 이 요청이 REQUIRE_CAPTCHA challenge의 답을 실제로 판정받았을 때만(통과 또는 오답) 그 challenge를 발급한 정책 결정이다.
+     * 판정과 같은 Lua 실행에서 정해지므로, 다른 사용자의 challenge·만료·이미 소비된 challenge(동시 중복 제출 포함)·재전송 응답·
+     * DELAY의 CAPTCHA(현재 BTS 계약에 기록할 결과가 없다)는 null이다.
+     */
+    public record Outcome(Grant grant,Long decisionId){}
     public Grant verify(String concert,long user,Verification body){
         return verify(concert,user,body,null);
     }
     public Grant verify(String concert,long user,Verification body,String transition){
+        var outcome=attempt(concert,user,body,transition);
+        if(outcome.grant()==null)throw new ApiException(ResponseCode.CAPTCHA_INVALID);
+        return outcome.grant();
+    }
+    public Outcome attempt(String concert,long user,Verification body,String transition){
         enabled();String token=nonce();String key=queues.base(concert)+"captcha-challenge:"+body.challengeId();
         // The provider comparison is separate; attempts, expiry and single successful
         // verification are checked again atomically in Lua against the expected digest.
@@ -69,7 +85,11 @@ public class CaptchaService {
         var result=call(List.of(key,queues.base(concert)+"captcha-grant:"+digest(token),replay),"verify",Long.toString(user),
                 valid?expected:"invalid",Long.toString(grantTtl),digest(body.challengeId()+":"+body.answer()),token);
         if(result.get(0).toString().equals("CONFLICT"))throw new ApiException(ResponseCode.DATA_CONFLICT);
-        if(!result.get(0).toString().equals("OK"))throw new ApiException(ResponseCode.CAPTCHA_INVALID);
-        return new Grant(result.size()>2?result.get(2).toString():token,Instant.ofEpochMilli(Long.parseLong(result.get(1).toString())));
+        Long decision=null;
+        if(result.size()>3){
+            try{long id=Long.parseLong(result.get(3).toString());if(id>0)decision=id;}catch(NumberFormatException ignored){/* no BTS decision */}
+        }
+        if(!result.get(0).toString().equals("OK"))return new Outcome(null,decision);
+        return new Outcome(new Grant(result.size()>2?result.get(2).toString():token,Instant.ofEpochMilli(Long.parseLong(result.get(1).toString()))),decision);
     }
 }

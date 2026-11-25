@@ -44,7 +44,7 @@ CAPTCHA challenge는 기본 2분, 답 제출 최대 5회이며 grant도 기본 2
 
 같은 X-Attempt-Transition의 동일 challenge/입력 재전송은 grant TTL 동안 원래 성공·실패 결과를 반환하며 실패 횟수를 다시 차감하지 않는다. 같은 ID의 다른 입력은 409/DATA_CONFLICT다. CAPTCHA 답 원문은 재전송 식별용 브라우저 저장소나 이벤트 metadata에 보관하지 않는다. 원래 grant가 만료되거나 소비된 뒤 재전송해도 grant 유효 기간을 연장하지 않는다.
 
-POLICY_DECISION_MODE는 disabled(ALLOW), mock(서버 설정), bts(원격 정책 호출)다. bts 모드는 BTS UUID를 매핑한 뒤 `POST /api/v1/users/{uuid}/policy-decisions`에 `{context:"QUEUE_JOIN"}`을 전송하고 data.action을 읽는다. 원격 endpoint의 제공은 BTS 배포에 달려 있다. 장애·알 수 없는 action을 ALLOW로 우회하지 않는다. CAPTCHA_MODE는 disabled/mock/hcaptcha를 지원한다. mock 산술 문제는 실제 봇 방지 공급자가 아니며 로컬 시연용이다. hcaptcha는 외부 공급자(hCaptcha)의 위젯과 서버 검증을 사용하고, 검증 API 장애 시 통과시키지 않고 503으로 응답한다.
+POLICY_DECISION_MODE는 disabled(ALLOW), mock(서버 설정), bts(원격 정책 호출)다. bts 모드는 BTS UUID를 매핑한 뒤 `POST /api/v1/users/{uuid}/policy-decisions`에 `{context:"QUEUE_JOIN",concertId}`를 전송하고 data.action과 data.decisionId를 읽는다(#67). 정책이 실제로 적용되면 그 결정의 decisionId로 적용 기록을 BTS에 보낸다. 브라우저 API의 요청·응답은 바뀌지 않으며, 기록 시점은 [BTS 연동 명세](bts-integration.md)의 "정책 적용 기록"을 따른다. 원격 endpoint의 제공은 BTS 배포에 달려 있다. 장애·알 수 없는 action을 ALLOW로 우회하지 않는다. CAPTCHA_MODE는 disabled/mock/hcaptcha를 지원한다. mock 산술 문제는 실제 봇 방지 공급자가 아니며 로컬 시연용이다. hcaptcha는 외부 공급자(hCaptcha)의 위젯과 서버 검증을 사용하고, 검증 API 장애 시 통과시키지 않고 503으로 응답한다.
 
 ## 좌석 선점과 예매
 
@@ -52,7 +52,7 @@ POLICY_DECISION_MODE는 disabled(ALLOW), mock(서버 설정), bts(원격 정책 
 
 | API | 요청 | 성공 |
 |---|---|---|
-| POST /api/v1/concerts/{concertId}/seat-holds | seatIds, 선택 attemptId/transitionId | 201; HoldResponse. BTS 정책이 RESTRICT면 403/BOOKING_RESTRICTED |
+| POST /api/v1/concerts/{concertId}/seat-holds | seatIds, 선택 attemptId/transitionId | 201; HoldResponse. BTS 정책이 RESTRICT면 403/BOOKING_RESTRICTED(이때 BLOCKED 적용 기록 생성) |
 | GET /api/v1/seat-holds/{holdId} | 없음 | 200; HoldResponse |
 | DELETE /api/v1/seat-holds/{holdId} | 없음 | 200; data=null |
 | POST /api/v1/bookings | holdId,paymentIdentifier | 신규 201, 재확정 200; BookingResponse |

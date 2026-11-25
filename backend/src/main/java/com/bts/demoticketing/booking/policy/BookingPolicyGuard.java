@@ -7,6 +7,8 @@ import com.bts.demoticketing.common.exception.ApiException;
 import com.bts.demoticketing.common.response.ResponseCode;
 import com.bts.demoticketing.integration.bts.PolicyDecisionClient;
 import com.bts.demoticketing.integration.bts.PolicyDecisionClient.Action;
+import com.bts.demoticketing.integration.bts.PolicyDecisionClient.Decision;
+import com.bts.demoticketing.outbox.PolicyApplicationRecorder;
 import com.bts.demoticketing.user.entity.DemoUser;
 
 /**
@@ -20,16 +22,24 @@ public class BookingPolicyGuard {
     private static final Logger log = LoggerFactory.getLogger(BookingPolicyGuard.class);
     private final PolicyDecisionClient policies;
 
-    public BookingPolicyGuard(PolicyDecisionClient policies) { this.policies = policies; }
+    private final PolicyApplicationRecorder applications;
 
-    public void check(DemoUser user) {
-        Action action;
+    public BookingPolicyGuard(PolicyDecisionClient policies, PolicyApplicationRecorder applications) {
+        this.policies = policies; this.applications = applications;
+    }
+
+    public void check(DemoUser user, String concertId) {
+        Decision decision;
         try {
-            action = policies.decideBooking(user);
+            decision = policies.decideBookingFor(user, concertId);
         } catch (RuntimeException e) {
             log.warn("Booking policy check unavailable; allowing seat hold (user={})", user.publicId());
             return;
         }
-        if (action == Action.RESTRICT) throw new ApiException(ResponseCode.BOOKING_RESTRICTED);
+        if (decision != null && decision.action() == Action.RESTRICT) {
+            // 선점을 실제로 거부한 경우에만 적용 기록을 남긴다 (#67). 장애로 허용한 경우는 기록하지 않는다.
+            applications.record(user, concertId, decision, "BLOCKED");
+            throw new ApiException(ResponseCode.BOOKING_RESTRICTED);
+        }
     }
 }

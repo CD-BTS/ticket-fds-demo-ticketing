@@ -43,12 +43,24 @@ public class OutboxRepository {
         return jdbc.queryForObject("SELECT id FROM outbox_events WHERE business_transition_id=? AND event_type='BOOKING_ATTEMPT'",Long.class,transition);
     }
 
+    /**
+     * 실제 정책 적용 기록 (#67). 멱등 키는 결정과 결과로 정해지므로 같은 적용을 다시 적재해도 행이 늘지 않는다.
+     * external_event_id가 BTS의 externalApplicationId다. 적재할 때 한 번 정하고 재시도에서 바꾸지 않는다.
+     */
+    public void appendPolicyApplication(long user,String service,long decision,String result,LocalDateTime applied,String metadata,LocalDateTime now){
+        jdbc.update("""
+                INSERT INTO outbox_events(user_id,service_id,external_event_id,business_transition_id,aggregate_id,
+                event_type,occurred_at_utc,metadata,next_attempt_at,created_at)
+                VALUES(?,?,?,?,?,'POLICY_APPLICATION',?,?,?,?) ON DUPLICATE KEY UPDATE id=id
+                """,user,service,"pa-"+decision+"-"+result,"policy:"+decision+":"+result,"policy:"+decision,applied,metadata,now,now);
+    }
+
     public Optional<Message> claim(LocalDateTime now,String serviceId){
         List<Message> rows=jdbc.query("""
                 SELECT e.* FROM outbox_events e
                 WHERE e.service_id=? AND ((e.delivery_status IN ('PENDING','RETRY') AND e.next_attempt_at<=?)
                     OR (e.delivery_status='IN_FLIGHT' AND e.locked_until<=?))
-                AND (e.event_type='BOOKING_ATTEMPT' OR NOT EXISTS (SELECT 1 FROM outbox_events older WHERE older.service_id=e.service_id AND older.aggregate_id=e.aggregate_id
+                AND (e.event_type IN ('BOOKING_ATTEMPT','POLICY_APPLICATION') OR NOT EXISTS (SELECT 1 FROM outbox_events older WHERE older.service_id=e.service_id AND older.aggregate_id=e.aggregate_id
                     AND older.id<e.id AND older.delivery_status<>'SENT'))
                 ORDER BY e.id LIMIT 1 FOR UPDATE SKIP LOCKED
                 """,mapper,serviceId,now,now);

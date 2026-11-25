@@ -28,7 +28,7 @@ public class BookingController {
     public ResponseEntity<ApiResponse<HoldResponse>> hold(@PathVariable @NotBlank @Size(max=50) String concertId,
             @Valid @RequestBody HoldRequest body,HttpServletRequest request){
         var user=auth.require(request);
-        bookingPolicy.check(user); // BTS 호출은 좌석 잠금·트랜잭션 밖에서 한다
+        bookingPolicy.check(user,concertId); // BTS 호출은 좌석 잠금·트랜잭션 밖에서 한다
         HoldResponse hold=reservations.hold(concertId,user,body.seatIds(),body.attemptId(),body.transitionId());
         return ResponseEntity.status(201).body(ApiResponse.success(ResponseCode.CREATED,hold));
     }

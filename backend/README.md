@@ -72,6 +72,7 @@ docker compose --env-file backend/.env -f backend/compose.yaml up -d --wait --wa
 | compose.yaml | 독립 컨테이너·포트·볼륨·계정·healthcheck |
 | db/schema.sql | 기존 핵심 8개 테이블 생성 |
 | db/02-booking-support.sql | 세션/Outbox 2개 추가. 기존 볼륨에도 -Apply로 적용 |
+| db/09-policy-application-outbox.sql | Outbox event_type CHECK에 POLICY_APPLICATION 추가(#67). 새 볼륨은 자동, 기존 볼륨은 02·04 적용 후 한 번만 수동 적용 |
 | db/seed.sql | 초기 볼륨에서 공연 3건/공연별 700석(A~Y 25행×28석) 삽입, 재실행도 누락 행만 추가 |
 | db/verify.sql | 정확한 합계·공연별 수량·가격·좌석 코드·제약 조회 |
 | db/00-create-database.sql | Compose 밖에서 수동 구성할 때의 선택 SQL. Compose에서는 MYSQL_DATABASE가 DB 생성 |
