@@ -40,6 +40,10 @@ if ($Only -ne 'all' -and (Test-Path $keyFile)) {
     $serviceKey = $keys.serviceKey; $adminKey = $keys.adminKey
     $gateKey = $keys.gateKey; $ticketSecret = $keys.ticketSecret
     if (-not $AiUrl -and $keys.aiUrl) { $AiUrl = $keys.aiUrl }  # 장애 시나리오의 BTS 재기동도 AI 설정 유지
+    if ($Only -eq 'bts') {
+        $keys | Add-Member -Force -MemberType NoteProperty -Name aiUrl -Value $AiUrl
+        $keys | ConvertTo-Json | Set-Content -Encoding UTF8 $keyFile
+    }
 } else {
     $serviceKey = 'e2e-svc-' + (New-TestKey)
     $adminKey = 'e2e-admin-' + (New-TestKey)
