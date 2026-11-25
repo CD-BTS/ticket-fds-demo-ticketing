@@ -77,6 +77,10 @@ ticket-fds-ai 서버를 먼저 띄운 뒤 `-AiUrl`로 기동합니다. 그러면
 .\Start-E2E.ps1 -AiUrl http://127.0.0.1:8000
 .\Run-Scenarios.ps1                 # -AiUrl 없이 기동하면 ai 시나리오는 [SKIP]
 ```
+`booking` 시나리오는 시도 시작·화면 단계 이벤트의 `ipAddress`가 BTS에 저장되고 BOOKING의 IP와 같은지, 서버 관측 단계에는 없는지, 재요청·재전송이 중복 저장되지 않는지도 확인합니다(#68). `ai` 시나리오는 그 IP로 BTS가 산출한 Credit 근거(`credit_calculation.recent_ip_attempt_count`, `ip_penalty`)와 `ip_booking_density`가 영향받지 않는지를 확인합니다.
+
+**공유 IP와 IP 집중도 감점 (#68):** e2e의 모든 요청은 같은 루프백 주소에서 옵니다(`localhost`가 IPv6로 풀리면 `0:0:0:0:0:0:0:1`, 아니면 `127.0.0.1`로 기록됩니다). BTS의 IP 집중도 감점은 계정이 아니라 IP 단위(최근 10분 같은 IP의 고유 시도 5건 이상 → 5점)라서, 시나리오가 이어서 돌면 평가되는 사용자 대부분이 이 감점을 받습니다. 신규 사용자는 50 → 45로 NORMAL·ALLOW 구간에 남습니다. 점수가 예상과 다르면 `credit_calculation`의 감점 내역(ai·card·ip·variance)으로 근거를 확인하세요. 감점 기준 4건·5건 경계, 서비스 간 분리, 10분 창, IP 누락 처리는 ticket-fds-admin의 `RiskAssessmentCursorMySqlTests`가 검증합니다.
+
 e2e는 모든 예매가 127.0.0.1과 공용 테스트 결제수단으로 들어옵니다. 그래서 예매한 사용자의 `ipBookingDensity`·`cardReuseCount`는 다른 시나리오 사용자 수만큼 커지고, 이상 점수도 올라갑니다. `ai` 시나리오의 정상 사용자는 이 영향을 받지 않도록 예매하지 않고 시도만 합니다.
 
 결과와 발견 사항:

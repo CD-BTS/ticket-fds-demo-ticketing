@@ -63,4 +63,36 @@ class AttemptMySqlTests {
         attempts.materialize();attempts.materialize();
         assertEquals(4,jdbc.queryForObject("SELECT COUNT(*) FROM outbox_events WHERE user_id=? AND event_type='BOOKING_ATTEMPT'",Integer.class,user.id()));
     }
+    private String ip(String table,String id,String stage){
+        return jdbc.queryForObject("SELECT JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.ipAddress')) FROM "+table+" WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.attemptId'))=?"
+                +" AND JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.stage'))=?",String.class,id,stage);
+    }
+    /** #68: 클라이언트 요청 전이에만 IP가 실리고, 재요청은 최초 IP를 유지하며, Outbox로 그대로 옮겨진다. */
+    @Test void clientIpIsRecordedOnceForClientTransitionsAndCarriedToTheOutbox(){
+        String id=UUID.randomUUID().toString(),payment=UUID.randomUUID().toString();
+        attempts.start(concert,id,user,"2026-11-08T00:00:00Z","203.0.113.7");
+        // 같은 시작 요청을 다른 네트워크에서 다시 보냄: 새 이벤트 없음, 409 없음, 최초 IP 유지
+        attempts.start(concert,id,user,"2026-11-08T00:00:00Z","198.51.100.9");
+        attempts.start(concert,id,user,"2026-11-08T00:00:00Z",null);
+        assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM booking_attempt_events WHERE attempt_id=?",Integer.class,id));
+        assertEquals("203.0.113.7",ip("booking_attempt_events",id,"STARTED"));
+        // 요청 내용이 실제로 바뀌면 지금처럼 409다
+        assertEquals("DATA_CONFLICT",assertThrows(com.bts.demoticketing.common.exception.ApiException.class,
+                ()->attempts.start(concert,id,user,"2026-11-08T00:00:09Z","203.0.113.7")).getResponseCode().getCode());
+
+        reservations.hold(concert,user,List.of("A-01"),id);                                  // 서버 관측 전이: IP 없음
+        attempts.client(id,user,payment,"PAYMENT","ENTERED","198.51.100.9");                 // 단계 보고는 그 요청의 IP
+        attempts.client(id,user,payment,"PAYMENT","ENTERED","192.0.2.44");                   // 재전송
+        assertEquals("DATA_CONFLICT",assertThrows(com.bts.demoticketing.common.exception.ApiException.class,
+                ()->attempts.client(id,user,payment,"PAYMENT","ABANDONED","198.51.100.9")).getResponseCode().getCode());
+        assertEquals(3,jdbc.queryForObject("SELECT COUNT(*) FROM booking_attempt_events WHERE attempt_id=?",Integer.class,id));
+        assertEquals("198.51.100.9",ip("booking_attempt_events",id,"PAYMENT"));
+        assertNull(ip("booking_attempt_events",id,"SEAT_HOLD"));
+
+        attempts.materialize();attempts.materialize();
+        assertEquals(3,jdbc.queryForObject("SELECT COUNT(*) FROM outbox_events WHERE user_id=? AND event_type='BOOKING_ATTEMPT'",Integer.class,user.id()));
+        assertEquals("203.0.113.7",ip("outbox_events",id,"STARTED"));
+        assertEquals("198.51.100.9",ip("outbox_events",id,"PAYMENT"));
+        assertNull(ip("outbox_events",id,"SEAT_HOLD"));
+    }
 }

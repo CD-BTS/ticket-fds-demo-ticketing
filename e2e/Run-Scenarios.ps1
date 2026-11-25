@@ -132,6 +132,23 @@ if (Want 'booking') {
     $attemptEvents = @($events | Where-Object event_type -eq 'BOOKING_ATTEMPT')
     Check '매핑: 시도 이벤트 attemptId = 생성한 attemptId' ($attemptEvents.Count -gt 0 -and -not ($attemptEvents | Where-Object attempt -ne $b.Attempt)) "$($attemptEvents.Count)건"
     Check '매핑: BOOKING bookingId = Demo 예매 ID' ([bool]($events | Where-Object { $_.event_type -eq 'BOOKING' -and $_.booking_id -eq $booking.id })) $booking.id
+    # #68: 예매 시도 이벤트의 IP. 클라이언트 요청으로 생긴 단계(시작, 화면 단계 보고)에만 실리고 BOOKING과 같은 기준이다.
+    $ips = @(Invoke-Sql bts "SELECT event_type, JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.stage')) stage, JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.source')) source, IFNULL(JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.ipAddress')),'NULL') ip FROM behavior_event WHERE user_id='$btsUser' AND event_type IN ('BOOKING','BOOKING_ATTEMPT')")
+    $bookingIp = ($ips | Where-Object event_type -eq 'BOOKING').ip
+    $clientSteps = @($ips | Where-Object { $_.event_type -eq 'BOOKING_ATTEMPT' -and $_.source -eq 'CLIENT_REPORT' })
+    $serverSteps = @($ips | Where-Object { $_.event_type -eq 'BOOKING_ATTEMPT' -and $_.source -eq 'SERVER' })
+    Check 'IP: 시도 시작·화면 단계 이벤트에 ipAddress 저장 (BOOKING과 같은 값)' ($bookingIp -ne 'NULL' -and $clientSteps.Count -ge 3 -and -not ($clientSteps | Where-Object ip -ne $bookingIp)) "booking=$bookingIp client=$((@($clientSteps | ForEach-Object { "$($_.stage):$($_.ip)" })) -join ',')"
+    Check 'IP: 서버 관측 단계 이벤트에는 ipAddress 없음' ($serverSteps.Count -ge 1 -and -not ($serverSteps | Where-Object ip -ne 'NULL')) "$($serverSteps.Count)건"
+    $startRow = @(Invoke-Sql demo "SELECT o.payload, JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.ipAddress')) journal_ip, JSON_UNQUOTE(JSON_EXTRACT(o.metadata,'$.ipAddress')) outbox_ip FROM outbox_events o JOIN booking_attempt_events e ON e.outbox_id=o.id WHERE e.attempt_id='$($b.Attempt)' AND e.transition_id='start'")[0]
+    $startPayload = $startRow.payload | ConvertFrom-Json
+    Check 'IP: journal·Outbox metadata·전송 payload의 IP가 모두 같음' ($startRow.journal_ip -eq $bookingIp -and $startRow.outbox_ip -eq $bookingIp -and $startPayload.metadata.ipAddress -eq $bookingIp) "journal=$($startRow.journal_ip) outbox=$($startRow.outbox_ip) payload=$($startPayload.metadata.ipAddress)"
+    # 같은 시작 요청을 다시 보내도(재요청) 새 이벤트가 생기지 않고, 동결된 payload 재전송도 BTS에 중복 저장되지 않는다.
+    $beforeEvents = [int](Invoke-Sql demo "SELECT COUNT(*) c FROM booking_attempt_events WHERE attempt_id='$($b.Attempt)'").c
+    $again = Demo PUT "/concerts/c1/booking-attempts/$($b.Attempt)" @{} $token
+    $afterEvents = [int](Invoke-Sql demo "SELECT COUNT(*) c FROM booking_attempt_events WHERE attempt_id='$($b.Attempt)'").c
+    $r = Bts POST '/events' $startPayload -Expect @(200, 201)
+    $stored = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM behavior_event WHERE user_id='$btsUser'").c
+    Check 'IP: 같은 attemptId 재요청·이벤트 재전송은 중복 저장 없음' ($again.Status -eq 200 -and $beforeEvents -eq $afterEvents -and $r.Status -eq 200 -and $stored -eq $events.Count) "journal=$beforeEvents→$afterEvents resend=$($r.Status) bts=$stored"
     $joined = (Bts GET "/admin/concerts/c1/users?serviceId=demo-ticketing" -Admin).Data
     $joinedIds = @($joined.content | ForEach-Object { $_.user.userId })
     Check '관리자: 공연별 참여 사용자에 표시' ($joinedIds -contains $btsUser) "users=$($joinedIds.Count)"
@@ -442,6 +459,31 @@ if (Want 'ai') {
         Check 'Credit: AI 평가 반영 이력(credit_history) 기록' ($hist -ge 1) "$hist건"
         $detail = (Bts GET "/admin/users/$mId" -Admin).Data.user
         Check '관리자 API: 사용자 상세에 최신 이상 점수 표시' ([double]$detail.anomalyScore -eq [double]$mScore.s) "api=$($detail.anomalyScore)"
+
+        # #68: 시도 이벤트의 IP로 BTS가 IP 집중도 감점(최근 10분 같은 IP의 고유 시도 5건 이상 → 5점)을 계산한다.
+        # 기준·계산식은 BTS(ticket-fds-admin) 것이고 여기서는 실제 이벤트로 산출된 근거(credit_calculation)만 확인한다.
+        $calcSql = "SELECT IFNULL(c.recent_ip_attempt_count,-1) n, IFNULL(c.ip_penalty,-1) ip, IFNULL(c.ai_penalty,-1) ai, IFNULL(c.card_penalty,-1) card, IFNULL(c.variance_penalty,-1) var, c.dynamic_penalty total, c.score_after score FROM credit_calculation c WHERE c.user_id='{0}' AND c.kind='EVALUATION' ORDER BY c.calculation_id DESC LIMIT 1"
+        $mCalc = @(Invoke-Sql bts ($calcSql -f $mId))[0]; $nCalc = @(Invoke-Sql bts ($calcSql -f $nId))[0]
+        $mAttempts = [int](Invoke-Sql bts "SELECT COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.attemptId'))) c FROM behavior_event WHERE user_id='$mId' AND event_type='BOOKING_ATTEMPT'").c
+        $mEvents = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM behavior_event WHERE user_id='$mId' AND event_type='BOOKING_ATTEMPT'").c
+        $mIp = @(Invoke-Sql bts "SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.ipAddress')) ip FROM behavior_event WHERE user_id='$mId' AND event_type='BOOKING_ATTEMPT' AND JSON_EXTRACT(metadata,'$.ipAddress') IS NOT NULL")[0].ip
+        # BTS와 같은 구간(그 평가의 분석 시각 직전 10분, 같은 서비스·같은 IP)으로 다시 센다. 분석 시각 뒤에 도착한 이벤트가
+        # 있을 수 있어 다시 센 고유 시도 수는 산출값보다 크거나 같다(상한). 하한은 구간 안에 모두 있는 본인 시도 수다.
+        $win = @(Invoke-Sql bts "SELECT COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.attemptId'))) attempts, COUNT(*) events FROM behavior_event e JOIN (SELECT t.calculated_at at FROM credit_calculation c JOIN risk_assessment_attempt t ON t.assessment_id=c.assessment_id WHERE c.user_id='$mId' AND c.kind='EVALUATION' ORDER BY c.calculation_id DESC LIMIT 1) w ON e.occurred_at > w.at - INTERVAL 10 MINUTE AND e.occurred_at <= w.at WHERE e.service_id='demo-ticketing' AND e.event_type='BOOKING_ATTEMPT' AND JSON_UNQUOTE(JSON_EXTRACT(e.metadata,'$.ipAddress'))='$mIp'")[0]
+        Check 'IP 감점: 매크로형 사용자의 최근 10분 동일 IP 시도 수 5건 이상 산출' ([int]$mCalc.n -ge 5 -and [int]$mCalc.n -ge $mAttempts) "recentIpAttemptCount=$($mCalc.n) (본인 시도 ${mAttempts}건, ip=$mIp)"
+        # 단계 이벤트마다 세었다면 산출값이 구간의 고유 시도 수를 넘는다. 경계(4건·5건)와 중복 제외의 정확한 검증은 BTS 테스트에 있다.
+        Check 'IP 감점: 산출값이 분석 시각 기준 10분 구간의 고유 시도 수 범위 안 (단계 이벤트 수 아님)' ($mEvents -gt $mAttempts -and [int]$mCalc.n -ge $mAttempts -and [int]$mCalc.n -le [int]$win.attempts -and [int]$win.attempts -lt [int]$win.events) "본인 시도 ${mAttempts}건 ≤ 산출 $($mCalc.n) ≤ 구간 고유 시도 $($win.attempts)건 < 구간 이벤트 $($win.events)건"
+        Check 'IP 감점: 5건 이상이면 IP 집중도 감점 5점 적용' ([double]$mCalc.ip -eq 5) "ip_penalty=$($mCalc.ip) (ai=$($mCalc.ai) card=$($mCalc.card) variance=$($mCalc.var) total=$($mCalc.total) → credit $($mCalc.score))"
+        # 집계는 계정이 아니라 IP 단위다: e2e는 모두 같은 루프백 주소라 다른 계정(정상 사용자 등)의 시도가 매크로형 사용자의 집계에 더해진다.
+        Check 'IP 감점: 같은 IP의 다른 계정 시도도 합산' ([int]$mCalc.n -gt $mAttempts) "recentIpAttemptCount=$($mCalc.n) > 본인 시도 ${mAttempts}건"
+        # 정상 사용자(본인 시도 1건)도 같은 IP라 평가 시점의 집계에 따라 감점될 수 있다. 감점 여부가 산출된 시도 수와 맞는지 본다.
+        $nExpected = if ([int]$nCalc.n -ge 5) { 5 } else { 0 }
+        Check 'IP 감점: 정상 사용자의 감점은 산출된 시도 수 기준(5건)과 일치, Credit에 반영' ([int]$nCalc.n -ge 1 -and [double]$nCalc.ip -eq $nExpected -and [int]$nCredit.s -eq [int]$nCalc.score) "recentIpAttemptCount=$($nCalc.n) ip_penalty=$($nCalc.ip) ai=$($nCalc.ai) → credit $($nCalc.score)"
+        $apiCalc = (Bts GET "/admin/users/$mId" -Admin).Data.latestCalculation
+        Check '관리자 API: Credit 산출 근거에 IP 시도 수·IP 감점 표시' ([int]$apiCalc.recentIpAttemptCount -eq [int]$mCalc.n -and [double]$apiCalc.ipPenalty -eq 5) "recentIpAttemptCount=$($apiCalc.recentIpAttemptCount) ipPenalty=$($apiCalc.ipPenalty)"
+        # AI Feature ip_booking_density는 BOOKING 이벤트의 IP만 본다. 예매가 없는 두 사용자는 시도 이벤트에 IP가 실려도 1이다.
+        $density = @(Invoke-Sql bts "SELECT a.user_id, a.ip_booking_density d, a.booking_count b FROM risk_assessment a WHERE a.assessment_id IN (SELECT MAX(assessment_id) FROM risk_assessment WHERE user_id IN ('$nId','$mId') GROUP BY user_id)")
+        Check 'AI Feature: 시도 이벤트의 IP는 ip_booking_density에 영향 없음 (예매 없는 사용자 = 1)' ($density.Count -eq 2 -and -not ($density | Where-Object { [int]$_.d -ne 1 })) (($density | ForEach-Object { "density=$($_.d) bookingCount=$($_.b)" }) -join ' / ')
 
         $q = Demo POST '/concerts/c3/queue' $null $tm -Expect @(200, 201, 403)
         $decision = @(Invoke-Sql bts "SELECT action, anomaly_score_at_decision s FROM policy_decision WHERE user_id='$mId' AND context='QUEUE_JOIN' ORDER BY decision_id DESC LIMIT 1")[0]

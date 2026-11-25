@@ -8,7 +8,7 @@ import static org.mockito.Mockito.*;
 class AttemptCapabilitiesTests {
     @Test void exposesExplicitFeatureStateWithoutDatabaseAccess(){
         var service=mock(AttemptService.class);
-        var controller=new AttemptController(service,mock(DemoAuthService.class));
+        var controller=new AttemptController(service,mock(DemoAuthService.class),new com.bts.demoticketing.common.web.ClientIpResolver(""));
         when(service.enabled()).thenReturn(false);
         assertFalse(controller.capabilities().data().enabled());
         when(service.enabled()).thenReturn(true);
