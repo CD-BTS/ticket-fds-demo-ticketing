@@ -45,7 +45,7 @@ BTS는 `(serviceId,externalEventId)`로 중복을 구분한다. 같은 ID·같�
 | BOOKING_ATTEMPT | 예매 시작·클라이언트 관측·서버 확인 단계 journal | attemptId,transitionId,concertId,stage,status,sequence,source,recordedAt 및 문맥 필드 |
 | CHECK_IN | 서버 검표 확정(등록 기기의 챌린지 서명 검증 후 ISSUED→CHECKED_IN) commit | concertId,performanceStartsAt,performanceEndsAt,deviceChanged; top-level ticketId와 bookingId |
 
-bookingDurationSeconds는 hold 생성~서버 확정의 0 이상 number다. paymentIdentifier는 허용된 테스트 식별자이며 카드번호/hash를 대신 수집하지 않는다. ipAddress는 서버가 관측한 요청 peer다. Forwarded/X-Forwarded-For는 신뢰 프록시 설정 없이 사용하지 않는다. 공연 시각·ticketIds는 예매 snapshot에서 얻으며 실제 참석 사실을 의미하지 않는다.
+bookingDurationSeconds는 hold 생성~서버 확정의 0 이상 number다. paymentIdentifier는 허용된 테스트 식별자이며 카드번호/hash를 대신 수집하지 않는다. ipAddress는 서버가 관측한 요청 peer다. TRUSTED_PROXIES에 지정한 프록시를 거친 요청은 X-Forwarded-For에서 신뢰 프록시가 아닌 첫 주소(오른쪽부터)를 쓴다(#64). 그 외에는 Forwarded/X-Forwarded-For를 사용하지 않는다. 공연 시각·ticketIds는 예매 snapshot에서 얻으며 실제 참석 사실을 의미하지 않는다.
 
 일반 이벤트의 metadata.bookingDurationSeconds는 제공되면 0 이상 숫자, metadata.deviceChanged는 제공되면 boolean이어야 한다. Feature 원천 전달과 BTS Feature 계산은 별개다. 브라우저 클릭·QR 표시·선점 만료를 BOOKING/CANCEL/CHECK_IN으로 만들어 보내지 않는다.
 

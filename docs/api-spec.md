@@ -65,7 +65,7 @@ HoldResponse는 `{holdId,concertId,seatIds,expiresAt}`다. BookingResponse는 `{
 
 사용자·공연별 guard와 정렬된 좌석 행 잠금으로 경쟁 요청을 직렬화한다. hold_id UNIQUE로 같은 선점에서 중복 예매를 방지한다. 예매·좌석·티켓·BOOKING Outbox는 같은 트랜잭션으로 commit한다. 취소는 CONFIRMED→CANCELLED 때만 CANCEL을 생성하며 재취소가 재판매 좌석을 풀지 않는다. 해제·만료는 CANCEL 이벤트가 아니다. 만료 시각은 expires_at <= 서버 현재 시각이며 주기 작업과 예약 경로에서 정리한다.
 
-paymentIdentifier는 TEST_PAYMENT_IDENTIFIERS의 서버 허용 목록 값이며 실제 카드번호나 hash가 아니다. 서버 관측 peer IP를 사용하고 신뢰 프록시 설정 없이 Forwarded/X-Forwarded-For를 신뢰하지 않는다.
+paymentIdentifier는 TEST_PAYMENT_IDENTIFIERS의 서버 허용 목록 값이며 실제 카드번호나 hash가 아니다. 서버 관측 peer IP를 사용한다. TRUSTED_PROXIES에 지정한 프록시에서 온 요청만 X-Forwarded-For의 클라이언트 IP를 쓰고(#64), 그 외에는 Forwarded/X-Forwarded-For를 신뢰하지 않는다.
 
 ## 예매 시도
 

@@ -1,6 +1,5 @@
 package com.bts.demoticketing.booking.controller;
 
-import java.net.InetAddress;
 import java.util.List;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -10,8 +9,8 @@ import org.springframework.web.bind.annotation.*;
 import com.bts.demoticketing.booking.dto.BookingDtos.*;
 import com.bts.demoticketing.booking.policy.BookingPolicyGuard;
 import com.bts.demoticketing.booking.service.ReservationService;
-import com.bts.demoticketing.common.exception.ApiException;
 import com.bts.demoticketing.common.response.*;
+import com.bts.demoticketing.common.web.ClientIpResolver;
 import com.bts.demoticketing.user.service.DemoAuthService;
 
 @RestController
@@ -20,8 +19,10 @@ public class BookingController {
     private final DemoAuthService auth;
     private final ReservationService reservations;
     private final BookingPolicyGuard bookingPolicy;
-    public BookingController(DemoAuthService auth,ReservationService reservations,BookingPolicyGuard bookingPolicy){
-        this.auth=auth;this.reservations=reservations;this.bookingPolicy=bookingPolicy;
+    private final ClientIpResolver clientIp;
+    public BookingController(DemoAuthService auth,ReservationService reservations,BookingPolicyGuard bookingPolicy,
+            ClientIpResolver clientIp){
+        this.auth=auth;this.reservations=reservations;this.bookingPolicy=bookingPolicy;this.clientIp=clientIp;
     }
     @PostMapping("/concerts/{concertId}/seat-holds")
     public ResponseEntity<ApiResponse<HoldResponse>> hold(@PathVariable @NotBlank @Size(max=50) String concertId,
@@ -42,7 +43,7 @@ public class BookingController {
     @PostMapping("/bookings")
     public ResponseEntity<ApiResponse<BookingResponse>> confirm(@Valid @RequestBody ConfirmRequest body,HttpServletRequest request){
         var user=auth.require(request);
-        var result=reservations.confirm(body.holdId(),body.paymentIdentifier(),peerIp(request),user);
+        var result=reservations.confirm(body.holdId(),body.paymentIdentifier(),clientIp.resolve(request),user);
         var code=result.created()?ResponseCode.CREATED:ResponseCode.SUCCESS;
         return ResponseEntity.status(code.getStatus()).body(ApiResponse.success(code,result.booking()));
     }
@@ -52,12 +53,4 @@ public class BookingController {
     }
     @GetMapping("/bookings/me")
     public ApiResponse<List<BookingResponse>> mine(HttpServletRequest request){return ApiResponse.success(reservations.mine(auth.require(request)));}
-
-    private static String peerIp(HttpServletRequest request){
-        // No trusted proxy configuration exists: ignore every client-supplied forwarding header.
-        String peer=request.getRemoteAddr();
-        if(peer==null||!peer.matches("[0-9a-fA-F:.]+"))throw new ApiException(ResponseCode.INVALID_REQUEST);
-        try{return InetAddress.getByName(peer).getHostAddress();}
-        catch(java.net.UnknownHostException e){throw new ApiException(ResponseCode.INVALID_REQUEST);}
-    }
 }
