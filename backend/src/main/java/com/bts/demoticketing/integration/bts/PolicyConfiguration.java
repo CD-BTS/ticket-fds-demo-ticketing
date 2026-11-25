@@ -17,13 +17,15 @@ public class PolicyConfiguration {
             org.springframework.beans.factory.ObjectProvider<com.bts.demoticketing.user.repository.DemoUserRepository> repositories){
         if(!mode.equals("bts"))return policyDecisionClient(mode,actions,json);
         return new PolicyDecisionClient(){
-            @Override public Action decide(DemoUser user){return decide(user,"QUEUE_JOIN");}
-            @Override public Action decideBooking(DemoUser user){return decide(user,"BOOKING_ATTEMPT");}
-            private Action decide(DemoUser user,String context){
+            @Override public Action decide(DemoUser user){return decide(user,"QUEUE_JOIN",null).action();}
+            @Override public Action decideBooking(DemoUser user){return decide(user,"BOOKING_ATTEMPT",null).action();}
+            @Override public Decision decideFor(DemoUser user,String concertId){return decide(user,"QUEUE_JOIN",concertId);}
+            @Override public Decision decideBookingFor(DemoUser user,String concertId){return decide(user,"BOOKING_ATTEMPT",concertId);}
+            private Decision decide(DemoUser user,String context,String concertId){
                 var users=repositories.getObject();var bts=clients.getObject();
                 String uuid=users.find(user.id()).orElseThrow().btsUserId();
                 if(uuid==null){uuid=bts.register(user);users.mapBtsUser(user.id(),uuid);}
-                return bts.policy(uuid,context);
+                return bts.decision(uuid,context,concertId);
             }
         };
     }

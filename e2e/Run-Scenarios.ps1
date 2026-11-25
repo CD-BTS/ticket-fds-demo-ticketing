@@ -25,9 +25,66 @@ function Wait-Delivered([string[]]$publicUserIds, [int]$Seconds = 120) {
     Wait-Until {
         $pendingAttempts = (Invoke-Sql demo "SELECT COUNT(*) c FROM booking_attempt_events e JOIN booking_attempts a ON a.attempt_id=e.attempt_id JOIN demo_users u ON u.id=a.user_id WHERE u.public_user_id IN ($ids) AND e.outbox_id IS NULL").c
         $rows = @(Invoke-Sql demo "SELECT o.external_event_id, o.event_type, o.delivery_status, DATE_FORMAT(o.occurred_at_utc,'%Y-%m-%dT%H:%i:%s.%fZ') t FROM outbox_events o JOIN demo_users u ON u.id=o.user_id WHERE u.public_user_id IN ($ids)")
-        if ([int]$pendingAttempts -eq 0 -and $rows.Count -gt 0 -and -not ($rows | Where-Object delivery_status -ne 'SENT')) { $rows }
+        # 정책 적용 기록(#67)은 행동 이벤트가 아니므로 전송 완료는 함께 기다리되 반환(=behavior_event와 비교할 행)에서는 뺀다.
+        if ([int]$pendingAttempts -eq 0 -and $rows.Count -gt 0 -and -not ($rows | Where-Object delivery_status -ne 'SENT')) { $rows | Where-Object event_type -ne 'POLICY_APPLICATION' }
     } $Seconds 'Outbox 전송 완료'
 }
+
+# ---------------------------------------------------------------- #67 정책 적용 기록 공통 함수
+# 정책별 동작을 확실히 만들기 위한 fixture: BTS DB의 Credit·이상 점수를 직접 정한다(model_version='e2e-manual').
+# 실제 AI 평가 결과가 아니다. AI 점수로 이어지는 흐름은 ai 시나리오가 따로 검증한다.
+# fixture 사용자는 X-Booking-Attempt 없이 진행해 behavior_event를 만들지 않는다(AI 재평가로 값이 덮이지 않게).
+function Set-RiskFixture([string]$btsUser, [int]$credit, $score = $null) {
+    $sql = "UPDATE user_credit SET credit_score=$credit WHERE user_id='$btsUser'"
+    if ($null -ne $score) { $sql += "; INSERT INTO risk_assessment(user_id, anomaly_score, model_version) VALUES ('$btsUser', $score, 'e2e-manual')" }
+    Invoke-Sql bts $sql | Out-Null
+}
+# 새 사용자를 만들고 c3 대기열에 한 번 입장시켜(이때는 ALLOW) BTS에 등록한 뒤 위험도 fixture를 넣는다.
+function New-PolicyUser([string]$name, [int]$credit, $score = $null) {
+    $token = Login $name
+    Demo POST '/concerts/c3/queue' $null $token | Out-Null
+    $bts = Wait-Until { Get-BtsUserId $name } 30 'BTS 사용자 등록'
+    if ($credit -ge 0) { Set-RiskFixture $bts $credit $score }
+    [pscustomobject]@{ Name = $name; Token = $token; Bts = $bts }
+}
+function New-Captcha([string]$concert, [string]$token) { (Demo POST "/concerts/$concert/queue/captcha-challenges" $null $token).Data }
+function Get-CaptchaAnswer($challenge) { $p = $challenge.question -split ' '; [string]([int]$p[0] + [int]$p[2]) }   # mock: "12 + 34 = ?"
+function Submit-Captcha([string]$concert, [string]$token, $challenge, [string]$answer, [int[]]$Expect = @(200)) {
+    Demo POST "/concerts/$concert/queue/captcha-verifications" @{ challengeId = $challenge.challengeId; answer = $answer } $token -Expect $Expect
+}
+function Get-Applications([string[]]$btsUsers) {
+    $ids = ($btsUsers | ForEach-Object { "'$_'" }) -join ','
+    @(Invoke-Sql bts "SELECT a.application_id, a.user_id, a.decision_id, a.concert_id, a.action, a.result, a.external_application_id, DATE_FORMAT(a.applied_at,'%Y-%m-%dT%H:%i:%s.%f') t, d.action d_action, IFNULL(d.concert_id,'NULL') d_concert, d.context, d.user_id d_user FROM policy_application a JOIN policy_decision d ON d.decision_id=a.decision_id WHERE a.user_id IN ($ids) ORDER BY a.application_id")
+}
+function Get-PolicyOutbox([string[]]$publicUserIds) {
+    $ids = ($publicUserIds | ForEach-Object { "'$_'" }) -join ','
+    @(Invoke-Sql demo "SELECT o.id, o.external_event_id, o.delivery_status, IFNULL(o.last_error_code,'') err, o.retries, IFNULL(o.bts_event_id,0) bts_id, DATE_FORMAT(o.occurred_at_utc,'%Y-%m-%dT%H:%i:%s.%f') t FROM outbox_events o JOIN demo_users u ON u.id=o.user_id WHERE u.public_user_id IN ($ids) AND o.event_type='POLICY_APPLICATION' ORDER BY o.id")
+}
+function Wait-PolicySent([string[]]$publicUserIds, [int]$expected, [int]$Seconds = 90) {
+    Wait-Until {
+        $rows = @(Get-PolicyOutbox $publicUserIds)   # PS 5.1: 한 행이면 배열이 풀려 .Count가 없다
+        if ($rows.Count -ge $expected -and -not ($rows | Where-Object delivery_status -ne 'SENT')) { , $rows }
+    } $Seconds "정책 적용 기록 ${expected}건 전송"
+}
+# 관리자 API의 실제 제재 통계. 기록이 없으면(recorded=false) 나머지가 null이라 0으로 읽는다.
+function Get-Sanctions([string]$path) {
+    $data = (Bts GET $path -Admin).Data
+    $s = $data.sanctions
+    [pscustomobject]@{
+        Recorded = [bool]$s.recorded; Users = [int]$s.appliedUserCount
+        CaptchaUsers = [int]$s.byPolicy.REQUIRE_CAPTCHA.userCount; CaptchaApps = [int]$s.byPolicy.REQUIRE_CAPTCHA.applicationCount
+        DelayUsers = [int]$s.byPolicy.DELAY.userCount; DelayApps = [int]$s.byPolicy.DELAY.applicationCount
+        RestrictUsers = [int]$s.byPolicy.RESTRICT.userCount; RestrictApps = [int]$s.byPolicy.RESTRICT.applicationCount
+        Challenged = [int]$s.captcha.challenged; Passed = [int]$s.captcha.passed; Failed = [int]$s.captcha.failed
+        Expected = [int]$(if ($null -ne $data.expectedSanctionUsers) { $data.expectedSanctionUsers } else { $data.expectedSanctionUserCount })
+    }
+}
+function Get-Delta($before, $after) {
+    $d = [ordered]@{}
+    foreach ($p in $after.PSObject.Properties.Name | Where-Object { $_ -ne 'Recorded' }) { $d[$p] = $after.$p - $before.$p }
+    [pscustomobject]$d
+}
+function Format-Delta($d) { ($d.PSObject.Properties | Where-Object { $_.Name -ne 'Expected' } | ForEach-Object { "$($_.Name)+$($_.Value)" }) -join ' ' }
 
 function Get-BtsUserId([string]$publicUserId) {
     (Invoke-Sql demo "SELECT bts_user_id FROM demo_users WHERE public_user_id='$publicUserId'").bts_user_id
@@ -389,6 +446,155 @@ if (Want 'ai') {
         $q = Demo POST '/concerts/c3/queue' $null $tm -Expect @(200, 201, 403)
         $decision = @(Invoke-Sql bts "SELECT action, anomaly_score_at_decision s FROM policy_decision WHERE user_id='$mId' AND context='QUEUE_JOIN' ORDER BY decision_id DESC LIMIT 1")[0]
         Check '정책: 매크로형 사용자 대기열 입장에 AI 점수 반영 (ALLOW 아님)' ($decision.action -ne 'ALLOW' -and [double]$decision.s -ge 0.5) "action=$($decision.action) score=$($decision.s) demo=$($q.Status) $($q.Code)"
+
+        # 실제 AI 점수로 내려진 정책이 실제로 적용되고, 그 적용 기록이 BTS에 남는지 (#67). 위험도를 직접 넣지 않는다.
+        $expected = switch ($decision.action) {
+            'RESTRICT' { @('BLOCKED') }                               # 위 입장 요청이 이미 QUEUE_RESTRICTED로 거부됨
+            'REQUIRE_CAPTCHA' { @('CHALLENGED', 'PASSED') }
+            'DELAY' { @('DELAYED') }
+            default { @() }
+        }
+        if ($decision.action -in @('REQUIRE_CAPTCHA', 'DELAY')) {
+            $ch = New-Captcha 'c3' $tm
+            $grant = (Submit-Captcha 'c3' $tm $ch (Get-CaptchaAnswer $ch)).Data.captchaToken
+            Demo POST '/concerts/c3/queue' $null $tm @{ 'X-Captcha-Token' = $grant } | Out-Null
+        }
+        if ($expected.Count -gt 0) {
+            Wait-PolicySent @($macro) $expected.Count | Out-Null
+            $apps = @(Get-Applications @($mId))
+            $ok = $apps.Count -eq $expected.Count -and -not ($apps | Where-Object { $_.action -ne $decision.action -or $_.d_concert -ne 'c3' -or $_.concert_id -ne 'c3' }) -and -not (Compare-Object @($apps.result | Sort-Object) @($expected | Sort-Object))
+            Check '정책 적용(실제 AI): AI 점수로 내려진 조치의 실제 적용이 BTS에 기록' $ok "action=$($decision.action) results=$(($apps.result) -join ',') (model=$($mScore.v))"
+        }
+        $nApps = @(Get-Applications @($nId))
+        Check '정책 적용(실제 AI): 정상(ALLOW) 사용자는 적용 기록 없음' ($nApps.Count -eq 0) "$($nApps.Count)건"
+    }
+}
+
+# ---------------------------------------------------------------- 10. 실제 정책 적용 기록 → BTS → 관리자 통계 (#67)
+# 위험도는 fixture(Set-RiskFixture)로 정한다. 실제 AI 기반 검증이 아니며, 정책별 적용 시점과 기록·집계만 검증한다.
+if (Want 'policy') {
+    $c1 = '/admin/concerts/c1?serviceId=demo-ticketing'; $c2 = '/admin/concerts/c2?serviceId=demo-ticketing'
+    $c3 = '/admin/concerts/c3?serviceId=demo-ticketing'; $all = '/admin/summary?serviceId=demo-ticketing'
+    $before = @{ c1 = (Get-Sanctions $c1); c2 = (Get-Sanctions $c2); c3 = (Get-Sanctions $c3); all = (Get-Sanctions $all) }   # fixture 주입 전 통계
+    # BTS 판정 기준(PolicyDecisionService): 평가 이력 없음 → Credit 20~39 REQUIRE_CAPTCHA, 20 미만 DELAY. Credit<20 + 점수>=0.85 → RESTRICT
+    $pass = New-PolicyUser "e2e-pa-pass-$runId" 30      # CAPTCHA 요구 → 실패 1회 → 통과 → 입장
+    $fail = New-PolicyUser "e2e-pa-fail-$runId" 30      # CAPTCHA 요구 → 실패 후 이탈
+    $idle = New-PolicyUser "e2e-pa-idle-$runId" 30      # 정책 결정만 받고 이탈
+    $slow = New-PolicyUser "e2e-pa-delay-$runId" 10     # DELAY (CAPTCHA + 후순위)
+    $deny = New-PolicyUser "e2e-pa-deny-$runId" 10 0.93 # RESTRICT (c3에는 이미 입장한 상태)
+    $free = New-PolicyUser "e2e-pa-allow-$runId" -1     # ALLOW (fixture 없음)
+    $people = @($pass, $fail, $idle, $slow, $deny, $free)
+
+    # --- REQUIRE_CAPTCHA: 요구 → 실패 → 통과
+    $r = Demo POST '/concerts/c1/queue' $null $pass.Token -Expect @(403)
+    $ch = New-Captcha 'c1' $pass.Token
+    $wrong = Submit-Captcha 'c1' $pass.Token $ch 'wrong' -Expect @(403)
+    $grant = (Submit-Captcha 'c1' $pass.Token $ch (Get-CaptchaAnswer $ch)).Data.captchaToken
+    $joined = Demo POST '/concerts/c1/queue' $null $pass.Token @{ 'X-Captcha-Token' = $grant }
+    Check '적용: REQUIRE_CAPTCHA 사용자는 CAPTCHA 없이 입장 불가, 통과 후 입장' ($r.Code -eq 'CAPTCHA_REQUIRED' -and $wrong.Code -eq 'CAPTCHA_INVALID' -and $joined.Status -eq 201) "$($r.Code)/$($wrong.Code)/$($joined.Status)"
+    # 같은 사용자가 다른 공연에서도 CAPTCHA를 요구받는다 (공연별 결정 분리 확인용, 검증은 하지 않음)
+    New-Captcha 'c2' $pass.Token | Out-Null
+    # --- REQUIRE_CAPTCHA: 요구 → 실패 후 이탈
+    $ch = New-Captcha 'c1' $fail.Token
+    Submit-Captcha 'c1' $fail.Token $ch 'wrong' -Expect @(403) | Out-Null
+    $r = Demo POST '/concerts/c1/queue' $null $fail.Token -Expect @(403)
+    Check '적용: CAPTCHA 실패 사용자는 대기열에 들어가지 못함' ($r.Code -eq 'CAPTCHA_REQUIRED' -and (Demo GET '/concerts/c1/queue/me' $null $fail.Token).Data.status -eq 'NOT_JOINED') $r.Code
+    # --- 정책 결정만 받고 이탈
+    Demo POST '/concerts/c1/queue' $null $idle.Token -Expect @(403) | Out-Null
+    # --- DELAY: CAPTCHA 통과 후 후순위 그룹 배치
+    $ch = New-Captcha 'c2' $slow.Token
+    Submit-Captcha 'c2' $slow.Token $ch 'wrong' -Expect @(403) | Out-Null
+    $grant = (Submit-Captcha 'c2' $slow.Token $ch (Get-CaptchaAnswer $ch)).Data.captchaToken
+    $joined = Demo POST '/concerts/c2/queue' $null $slow.Token @{ 'X-Captcha-Token' = $grant }
+    Demo POST '/concerts/c2/queue' $null $slow.Token | Out-Null     # 이미 등록된 사용자의 재요청: 정책 재적용 없음
+    # --- RESTRICT: 좌석 선점 거부(c3, 대기열은 이미 통과), 대기열 입장 거부(c2)
+    $hold = Demo POST '/concerts/c3/seat-holds' @{ seatIds = @('Y-01') } $deny.Token -Expect @(403)
+    $q = Demo POST '/concerts/c2/queue' $null $deny.Token -Expect @(403)
+    Check '적용: RESTRICT 사용자는 좌석 선점·대기열 입장 모두 거부' ($hold.Code -eq 'BOOKING_RESTRICTED' -and $q.Code -eq 'QUEUE_RESTRICTED') "$($hold.Code)/$($q.Code)"
+    # --- ALLOW
+    $r = Demo POST '/concerts/c1/queue' $null $free.Token
+    Check '적용: ALLOW 사용자는 바로 입장' ($r.Data.status -in @('ADMITTED', 'WAITING')) $r.Data.status
+
+    # --- Outbox → BTS (스케줄러가 전송한다. 여기서는 기다리기만 한다)
+    $sent = @(Wait-PolicySent @($people.Name) 9)
+    Check 'Outbox: 정책 적용 기록 9건 적재, 전부 SENT' ($sent.Count -eq 9) "rows=$($sent.Count)"
+    $apps = @(Get-Applications @($people.Bts))
+    Check 'BTS DB: policy_application 9건 저장 (누락·중복 없음)' ($apps.Count -eq 9 -and @($apps.external_application_id | Sort-Object -Unique).Count -eq 9) "bts=$($apps.Count)"
+    $idMismatch = @($sent | Where-Object { $o = $_; -not ($apps | Where-Object { $_.external_application_id -eq $o.external_event_id -and [long]$_.application_id -eq [long]$o.bts_id -and $_.t.Substring(0, 23) -eq $o.t.Substring(0, 23) }) })
+    Check 'BTS DB: externalApplicationId·applicationId·적용 시각(밀리초)이 Outbox와 일치' ($idMismatch.Count -eq 0) "불일치 $($idMismatch.Count)건"
+    function Of($person) { @($apps | Where-Object user_id -eq $person.Bts) }
+    function Results($rows) { (@($rows | ForEach-Object { "$($_.concert_id):$($_.action)/$($_.result)" }) | Sort-Object) -join ' ' }
+    $p = @(Of $pass); $pc1 = @($p | Where-Object concert_id -eq 'c1')
+    Check '기록: CAPTCHA 요구·실패·통과가 같은 결정에 기록 (c1)' ((Results $pc1) -eq 'c1:REQUIRE_CAPTCHA/CHALLENGED c1:REQUIRE_CAPTCHA/FAILED c1:REQUIRE_CAPTCHA/PASSED' -and @($pc1.decision_id | Sort-Object -Unique).Count -eq 1) "$(Results $pc1) decision=$(($pc1.decision_id | Sort-Object -Unique) -join ',')"
+    $pc2 = @($p | Where-Object concert_id -eq 'c2')
+    Check '기록: 같은 사용자의 다른 공연(c2)은 별도 결정으로 분리' ((Results $pc2) -eq 'c2:REQUIRE_CAPTCHA/CHALLENGED' -and $pc2[0].decision_id -ne $pc1[0].decision_id -and $p.Count -eq 4) "c1=$($pc1[0].decision_id) c2=$($pc2[0].decision_id)"
+    Check '기록: CAPTCHA 실패 후 이탈 = CHALLENGED + FAILED' ((Results (Of $fail)) -eq 'c1:REQUIRE_CAPTCHA/CHALLENGED c1:REQUIRE_CAPTCHA/FAILED') (Results (Of $fail))
+    $idleDecisions = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM policy_decision WHERE user_id='$($idle.Bts)' AND action='REQUIRE_CAPTCHA' AND concert_id='c1'").c
+    Check '기록: 정책 결정만 받고 적용되지 않으면 기록 없음' (@(Of $idle).Count -eq 0 -and $idleDecisions -eq 1) "결정 ${idleDecisions}건, 적용 $(@(Of $idle).Count)건"
+    Check '기록: DELAY는 후순위 배치 DELAYED 1건만 (CAPTCHA 결과는 계약상 기록 없음)' ($joined.Status -eq 201 -and (Results (Of $slow)) -eq 'c2:DELAY/DELAYED') (Results (Of $slow))
+    $d = @(Of $deny)
+    Check '기록: RESTRICT는 선점 거부(BOOKING_ATTEMPT)·입장 거부(QUEUE_JOIN) 각각 BLOCKED' ((Results $d) -eq 'c2:RESTRICT/BLOCKED c3:RESTRICT/BLOCKED' -and ($d | Where-Object concert_id -eq 'c3').context -eq 'BOOKING_ATTEMPT' -and ($d | Where-Object concert_id -eq 'c2').context -eq 'QUEUE_JOIN') "$(Results $d)"
+    Check '기록: ALLOW 사용자는 기록 없음' (@(Of $free).Count -eq 0) ''
+    Check 'decisionId: 모든 기록이 같은 사용자·같은 공연·같은 조치의 결정을 가리킴' (-not ($apps | Where-Object { $_.d_user -ne $_.user_id -or $_.d_concert -ne $_.concert_id -or $_.d_action -ne $_.action })) ''
+    $noConcert = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM policy_decision WHERE user_id IN ($(($people.Bts | ForEach-Object { "'$_'" }) -join ',')) AND concert_id IS NULL").c
+    Check 'decisionId: 정책 결정 요청마다 공연 ID 전달 (concert_id NULL 없음)' ($noConcert -eq 0) "NULL ${noConcert}건"
+    $ids = ($people.Bts | ForEach-Object { "'$_'" }) -join ','
+    $ev = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM behavior_event WHERE user_id IN ($ids)").c
+    $cur = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM risk_assessment_cursor WHERE user_id IN ($ids)").c
+    Check 'AI 분리: 적용 기록은 behavior_event에 없고 AI 평가 대상이 되지 않음' ($ev -eq 0 -and $cur -eq 0) "behavior_event=$ev cursor=$cur"
+
+    # --- 중복 전송 방지: Outbox에 동결된 payload를 그대로 다시 보낸다 (응답 유실 후 재전송 가정)
+    $row = @(Invoke-Sql demo "SELECT o.payload FROM outbox_events o JOIN demo_users u ON u.id=o.user_id WHERE u.public_user_id='$($pass.Name)' AND o.event_type='POLICY_APPLICATION' ORDER BY o.id LIMIT 1")[0]
+    $payload = $row.payload | ConvertFrom-Json
+    $r = Bts POST '/policy-applications' $payload -Expect @(200, 201)
+    $count = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM policy_application WHERE user_id IN ($ids)").c
+    Check '중복: 같은 기록 재전송은 200, 같은 applicationId, 저장 건수 그대로' ($r.Status -eq 200 -and $count -eq 9 -and [long]$r.Data.applicationId -eq [long]($apps | Where-Object external_application_id -eq $payload.externalApplicationId).application_id) "status=$($r.Status) count=$count"
+    $payload.result = 'PASSED'
+    $r = Bts POST '/policy-applications' $payload -Expect @(409)
+    $count = [int](Invoke-Sql bts "SELECT COUNT(*) c FROM policy_application WHERE user_id IN ($ids)").c
+    Check '중복: 같은 ID에 다른 내용은 409, 저장 건수 그대로' ($r.Status -eq 409 -and $count -eq 9) $r.Code
+
+    # --- 관리자 조회 API (ticket-fds-admin docs/api-spec.md의 sanctions). 다른 시나리오의 기록과 섞이지 않게 증가분으로 본다.
+    $after = @{ c1 = (Get-Sanctions $c1); c2 = (Get-Sanctions $c2); c3 = (Get-Sanctions $c3); all = (Get-Sanctions $all) }
+    $d1 = Get-Delta $before.c1 $after.c1; $d2 = Get-Delta $before.c2 $after.c2; $d3 = Get-Delta $before.c3 $after.c3; $da = Get-Delta $before.all $after.all
+    Check '관리자 API: 실제 제재 기록 있음 (sanctions.recorded)' ($after.all.Recorded -and $after.c1.Recorded) ''
+    Check '관리자 API(c1): 실제 제재 사용자 +2, REQUIRE_CAPTCHA 적용 +2' ($d1.Users -eq 2 -and $d1.CaptchaUsers -eq 2 -and $d1.CaptchaApps -eq 2 -and $d1.DelayApps -eq 0 -and $d1.RestrictApps -eq 0) (Format-Delta $d1)
+    Check '관리자 API(c1): CAPTCHA 요구 +2, 통과 +1, 실패 +2' ($d1.Challenged -eq 2 -and $d1.Passed -eq 1 -and $d1.Failed -eq 2) "challenged+$($d1.Challenged) passed+$($d1.Passed) failed+$($d1.Failed)"
+    Check '관리자 API(c1): CAPTCHA 결과(기록 5건)가 제재 건수로 중복 집계되지 않음' ($pc1.Count + @(Of $fail).Count -eq 5 -and $d1.CaptchaApps -eq 2) "기록 5건 → applicationCount+$($d1.CaptchaApps)"
+    Check '관리자 API(c2): 사용자 +3, REQUIRE_CAPTCHA +1, DELAY +1, RESTRICT +1' ($d2.Users -eq 3 -and $d2.CaptchaApps -eq 1 -and $d2.DelayApps -eq 1 -and $d2.DelayUsers -eq 1 -and $d2.RestrictApps -eq 1 -and $d2.Passed -eq 0 -and $d2.Failed -eq 0) (Format-Delta $d2)
+    Check '관리자 API(c3): 좌석 선점 거부 RESTRICT +1' ($d3.Users -eq 1 -and $d3.RestrictApps -eq 1 -and $d3.CaptchaApps -eq 0 -and $d3.DelayApps -eq 0) (Format-Delta $d3)
+    Check '관리자 API(요약): 실제 제재 고유 사용자 +4 (정책별 합이 아님), 적용 CAPTCHA +3 · DELAY +1 · RESTRICT +2' ($da.Users -eq 4 -and $da.CaptchaApps -eq 3 -and $da.DelayApps -eq 1 -and $da.RestrictApps -eq 2 -and $da.Challenged -eq 3 -and $da.Passed -eq 1 -and $da.Failed -eq 2) (Format-Delta $da)
+    # 예상 제재(현재 Credit·점수 기준)는 결정만 받고 이탈한 사용자도 포함한다. 실제 제재와 다른 값이다.
+    Check '관리자 API(요약): 예상 제재(+5 이상)와 실제 제재(+4)는 별개 집계' ($da.Expected -ge 5 -and $da.Users -eq 4) "expectedSanctionUsers+$($da.Expected) appliedUserCount+$($da.Users)"
+}
+
+# ---------------------------------------------------------------- 11. BTS 장애 중 정책 적용 기록 → 재시도 (#67)
+if (Want 'policy-outage') {
+    # 정책 결정에는 BTS가 필요하므로 "적용 직후 BTS 중지"로 만든다. 전송 주기(5초)가 먼저 돌면 이미 SENT라 다시 시도한다.
+    $caught = $null
+    for ($try = 1; $try -le 3 -and -not $caught; $try++) {
+        $u = New-PolicyUser "e2e-po$try-$runId" 10 0.93
+        $hold = Demo POST '/concerts/c3/seat-holds' @{ seatIds = @('Y-02') } $u.Token -Expect @(403)
+        & (Join-Path $PSScriptRoot 'Stop-E2E.ps1') -Only bts | Out-Null
+        Start-Sleep -Seconds 2
+        $row = @(Get-PolicyOutbox @($u.Name))[0]
+        if ($row -and $row.delivery_status -ne 'SENT') { $caught = $u }
+        else { & (Join-Path $PSScriptRoot 'Start-E2E.ps1') -Only bts -SkipCompose | Out-Null }
+    }
+    if (-not $caught) {
+        Write-Output '[SKIP] policy-outage: 세 번 모두 BTS 중지 전에 전송이 끝났습니다. 다시 실행하세요.'
+    } else {
+        Start-Sleep -Seconds 12
+        $row = @(Get-PolicyOutbox @($caught.Name))[0]
+        Check '장애: BTS 중지 중 정책 적용 기록은 Outbox에 RETRY로 대기' ($row.delivery_status -in @('RETRY', 'IN_FLIGHT', 'PENDING') -and [int]$row.retries -ge 1) "status=$($row.delivery_status) error=$($row.err) retries=$($row.retries)"
+        # BTS 장애 중에도 티켓팅 서비스는 동작한다: 이미 입장한 사용자의 좌석 선점은 허용되고(기록 없음), 공연 조회도 정상.
+        $concerts = Demo GET '/concerts'
+        $hold2 = Demo POST '/concerts/c3/seat-holds' @{ seatIds = @('Y-03') } $caught.Token -Expect @(201, 409)
+        Check '장애: BTS 중지 중 Demo 동작 유지 (조회 200, 입장한 사용자의 선점은 정책 확인 없이 진행)' ($concerts.Status -eq 200 -and $hold2.Status -in @(201, 409)) "concerts=$($concerts.Status) hold=$($hold2.Status) $($hold2.Code)"
+        & (Join-Path $PSScriptRoot 'Start-E2E.ps1') -Only bts -SkipCompose | Out-Null
+        $sent = @(Wait-PolicySent @($caught.Name) 1 300)
+        $stored = @(Get-Applications @($caught.Bts))
+        Check '장애: BTS 복구 후 재전송되어 한 번만 저장, 장애 중 허용된 선점은 기록 없음' ($sent.Count -eq 1 -and $stored.Count -eq 1 -and $stored[0].result -eq 'BLOCKED' -and $stored[0].external_application_id -eq $row.external_event_id -and $stored[0].t.Substring(0, 23) -eq $row.t.Substring(0, 23)) "outbox=$($sent.Count) bts=$($stored.Count) retries=$($sent[0].retries)"
     }
 }
 

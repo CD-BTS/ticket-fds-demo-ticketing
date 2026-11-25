@@ -29,7 +29,12 @@ cd e2e
   - BTS에는 SHA-256 해시만 전달합니다.
 - **로그:** `e2e/.run/bts.log`, `e2e/.run/demo.log`
 - **BTS DB URL:** admin README의 URL(`serverTimezone=Asia/Seoul`)을 그대로 씁니다. 결과 문서의 발견 사항 3을 참고하세요.
-- **Demo 설정:** `POLICY_DECISION_MODE=bts`, `CAPTCHA_MODE=disabled`, `BOOKING_ATTEMPTS_ENABLED=true`, `BTS_CONCERT_SYNC_MS=60000`
+- **BTS 스키마:** 새 컨테이너는 ticket-fds-admin의 `backend/db/schema.sql` 하나로 초기화됩니다. 이 파일에 `risk_assessment_cursor`(#62)와 #67의 `risk_assessment_attempt`·`credit_calculation`·`policy_application`·추가 컬럼이 모두 들어 있습니다.
+  - `db/manual/*.sql`은 기존 DB용이므로 e2e에는 적용하지 않습니다(적용하면 중복 컬럼 오류).
+  - healthcheck가 마지막 테이블인 `policy_application`까지 확인합니다. ticket-fds-admin이 #67 이전 버전이면 기동이 실패합니다.
+- **Demo 스키마:** 기존 스크립트에 더해 `09-policy-application-outbox.sql`(#67)이 적용됩니다.
+- **Demo 설정:** `POLICY_DECISION_MODE=bts`, `CAPTCHA_MODE=mock`, `BOOKING_ATTEMPTS_ENABLED=true`, `BTS_CONCERT_SYNC_MS=60000`
+  - CAPTCHA는 산술 문제(mock)입니다. 정책 적용 기록의 CAPTCHA 요구·통과·실패를 외부 공급자 없이 검증하려고 켭니다(#67).
 - **검표 설정 (#53):** `CHECKIN_ENABLED=true`. e2e Demo DB에는 05(기기 바인딩)·07(검표 챌린지) 스크립트도 적용됩니다.
   - 검표 담당자 키와 TOTP 비밀키 암호화 키도 실행할 때마다 새로 만들어 `e2e/.run/keys.json`에만 둡니다.
   - seed 공연이 미래 날짜라 `CHECKIN_OPENS_BEFORE=P365D`로 입장 가능 시간을 넓힙니다.
@@ -45,12 +50,25 @@ cd e2e
 | `outage` | BTS 프로세스 중지 중<br>· 신규 대기열 입장 503<br>· 이미 입장한 사용자의 좌석 선점은 허용<br>· 이벤트는 Outbox에 RETRY로 남음<br>BTS 재기동 후: 전부 재전송, 유실·중복 없음 |
 | `replay` | 같은 이벤트를 다시 보내면 200이고 저장 건수는 그대로. 같은 ID에 다른 내용이면 409 |
 | `concurrency` | 8명이 같은 좌석을 동시에 선점<br>· 1명만 201, 나머지 409<br>· 모든 이벤트가 BTS에 1회씩 저장<br>· 실패한 7건이 SEAT_HOLD/REJECTED로 기록 |
-| `ai` | (`-AiUrl`로 기동한 경우만) 정상 사용자와 매크로형 사용자(짧고 일정한 간격 시도 12번)를 만든 뒤 다음을 확인<br>· BTS가 ticket-fds-ai로 평가해 두 사용자 모두 OK<br>· 정상 사용자 점수 0.5 미만, 매크로형 0.5 이상<br>· Credit 반영과 `credit_history` 기록<br>· 관리자 사용자 상세에 최신 점수 표시<br>· 매크로형 사용자의 다음 대기열 입장이 AI 점수 근거로 ALLOW가 아님 |
+| `ai` | (`-AiUrl`로 기동한 경우만) 정상 사용자와 매크로형 사용자(짧고 일정한 간격 시도 12번)를 만든 뒤 다음을 확인<br>· BTS가 ticket-fds-ai로 평가해 두 사용자 모두 OK<br>· 정상 사용자 점수 0.5 미만, 매크로형 0.5 이상<br>· Credit 반영과 `credit_history` 기록<br>· 관리자 사용자 상세에 최신 점수 표시<br>· 매크로형 사용자의 다음 대기열 입장이 AI 점수 근거로 ALLOW가 아님<br>· 그 조치가 실제로 적용되고 적용 기록이 BTS `policy_application`에 저장됨(#67), 정상 사용자는 기록 없음 |
+| `policy` | 정책별 실제 적용 기록(#67). 위험도는 fixture로 정함(아래 참고)<br>· REQUIRE_CAPTCHA: 요구 → 실패 → 통과가 같은 결정에 `CHALLENGED`·`FAILED`·`PASSED`로 기록<br>· DELAY: 후순위 배치 `DELAYED` 1건만<br>· RESTRICT: 좌석 선점 거부·대기열 입장 거부 각각 `BLOCKED`<br>· ALLOW, 결정만 받고 이탈한 사용자는 기록 없음<br>· 사용자·공연별 decisionId 정합성, `policy_decision.concert_id` 전달<br>· Outbox 전부 SENT, BTS 저장 건수·ID·적용 시각 일치, 재전송 200·다른 내용 409<br>· `behavior_event`·AI 평가 대상에 들어가지 않음<br>· 관리자 API `sanctions`: 공연별·요약 실제 제재 사용자 수, 정책별 적용 횟수, CAPTCHA 요구·통과·실패, 예상 제재와의 구분, CAPTCHA 결과가 적용 횟수로 중복 집계되지 않음 |
+| `policy-outage` | 좌석 선점 거부 직후 BTS 중지<br>· 적용 기록이 Outbox에 RETRY로 대기<br>· BTS 중지 중에도 Demo 조회·선점 동작 유지<br>BTS 재기동 후: 같은 기록이 한 번만 저장 |
 | `checkin` | 예매 → 기기 등록 → QR 생성 → 스캔 → 챌린지 서명 → 입장 확정 후 다음을 확인<br>· 잘못된 QR·만료된 TOTP·미등록 기기 서명·만료/재사용 챌린지·중복 검표 거부, 실패 시 티켓 상태 불변<br>· 티켓 `CHECKED_IN`, `checked_in_at` 기록<br>· Outbox `CHECK_IN`이 스케줄러로 전송돼 SENT<br>· BTS `behavior_event` 저장, 사용자·티켓·예매·공연·발생 시각 매핑<br>· 재전송 시 중복 저장 없음<br>· 관리자·서비스 API의 CHECK_IN 조회와 프론트엔드 타입 일치 |
 
 `checkin` 시나리오는 스크립트가 브라우저 기기 역할을 합니다. ECDSA P-256 키를 만들고 실제 API로 등록한 뒤 QR과 챌린지 응답에 직접 서명합니다(`E2E-Common.ps1`). 서버의 인증·서명 검증은 우회하지 않습니다.
 
 `restrict` 시나리오는 RESTRICT 경계(Credit 20 미만 + 이상 점수 0.85 이상)를 확실히 만들려고 BTS DB에 위험도를 직접 넣습니다(`credit_score=10`, `anomaly_score=0.93`). 실제 AI 점수로 이어지는 흐름은 `ai` 시나리오가 검증합니다.
+
+### fixture 기반 검증과 실제 AI 기반 검증의 구분 (#67)
+| 시나리오 | 위험도 출처 | 검증 범위 |
+|---|---|---|
+| `restrict`, `policy`, `policy-outage` | BTS DB에 직접 넣은 값. `risk_assessment.model_version='e2e-manual'` | 정책별 적용 시점, 적용 기록, 전송, 관리자 집계. **AI 통합 검증이 아님** |
+| `ai` | ticket-fds-ai가 실제 이벤트로 계산한 점수 | 이벤트 → AI 평가 → Credit → 정책 → 실제 적용 → 적용 기록 |
+
+- `policy` fixture 값: Credit 30·평가 없음 → REQUIRE_CAPTCHA, Credit 10·평가 없음 → DELAY, Credit 10·점수 0.93 → RESTRICT (ticket-fds-admin `PolicyDecisionService` 기준).
+- fixture 사용자는 `X-Booking-Attempt` 없이 진행해 `behavior_event`를 만들지 않습니다. 이벤트가 생기면 `-AiUrl` 기동 시 BTS가 재평가해 넣어 둔 값이 바뀔 수 있습니다.
+- `policy-outage`는 "적용 직후 BTS 중지"라 Demo의 전송 주기(5초)와 경합합니다. 중지 전에 전송이 끝나면 새 사용자로 최대 3번 다시 시도하고, 그래도 안 되면 `[SKIP]`으로 표시합니다. 재시도 동작 자체는 `PolicyApplicationOutboxMySqlTests`가 결정적으로 검증합니다.
+- 관리자 통계는 다른 시나리오의 기록과 섞이지 않도록 시나리오 전후의 **증가분**으로 판정합니다.
 
 ### AI 연동 시나리오 (`ai`, #62)
 ticket-fds-ai 서버를 먼저 띄운 뒤 `-AiUrl`로 기동합니다. 그러면 BTS가 `AI_ENABLED=true`, `AI_POLL_MS=5000`으로 실행됩니다(ticket-fds-admin `docs/ai-design.md`).

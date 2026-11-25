@@ -117,20 +117,33 @@ class BtsConcertSyncAndBookingPolicyTests {
 
     @Test
     void bookingGuardBlocksOnlyRestrictAndAllowsWhenPolicyUnavailable() {
+        var recorder = mock(com.bts.demoticketing.outbox.PolicyApplicationRecorder.class);
         PolicyDecisionClient restricted = mock(PolicyDecisionClient.class);
-        when(restricted.decideBooking(user)).thenReturn(Action.RESTRICT);
-        var error = assertThrows(ApiException.class, () -> new BookingPolicyGuard(restricted).check(user));
+        var blocked = new PolicyDecisionClient.Decision(Action.RESTRICT, 41L);
+        when(restricted.decideBookingFor(user, "c1")).thenReturn(blocked);
+        var error = assertThrows(ApiException.class, () -> new BookingPolicyGuard(restricted, recorder).check(user, "c1"));
         assertEquals(ResponseCode.BOOKING_RESTRICTED, error.getResponseCode());
+        // 선점을 실제로 거부했을 때만, 그 거부를 만든 결정으로 BLOCKED를 남긴다 (#67)
+        verify(recorder).record(user, "c1", blocked, "BLOCKED");
 
         for (Action action : List.of(Action.ALLOW, Action.REQUIRE_CAPTCHA, Action.DELAY)) {
             PolicyDecisionClient client = mock(PolicyDecisionClient.class);
-            when(client.decideBooking(user)).thenReturn(action);
-            assertDoesNotThrow(() -> new BookingPolicyGuard(client).check(user));
+            when(client.decideBookingFor(user, "c1")).thenReturn(new PolicyDecisionClient.Decision(action, 42L));
+            assertDoesNotThrow(() -> new BookingPolicyGuard(client, recorder).check(user, "c1"));
         }
 
         PolicyDecisionClient failing = mock(PolicyDecisionClient.class);
-        when(failing.decideBooking(user)).thenThrow(new BtsClient.DeliveryFailure("BTS_NETWORK", true));
-        assertDoesNotThrow(() -> new BookingPolicyGuard(failing).check(user));
+        when(failing.decideBookingFor(user, "c1")).thenThrow(new BtsClient.DeliveryFailure("BTS_NETWORK", true));
+        assertDoesNotThrow(() -> new BookingPolicyGuard(failing, recorder).check(user, "c1"));
+        // 예매 단계에서 적용되지 않는 정책, 장애로 허용한 선점은 적용 기록이 없다
+        verifyNoMoreInteractions(recorder);
+    }
+
+    @Test
+    void nonBtsModesHaveNoDecisionIdSoNoApplicationCanBeRecorded() {
+        PolicyDecisionClient mockMode = new MockPolicyDecisionClient(Map.of("u-1", Action.RESTRICT));
+        assertEquals(new PolicyDecisionClient.Decision(Action.RESTRICT, null), mockMode.decideFor(user, "c1"));
+        assertEquals(new PolicyDecisionClient.Decision(Action.RESTRICT, null), mockMode.decideBookingFor(user, "c1"));
     }
 
     @Test

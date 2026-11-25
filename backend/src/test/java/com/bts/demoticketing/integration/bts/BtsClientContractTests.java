@@ -35,6 +35,57 @@ class BtsClientContractTests {
         }finally{server.stop(0);}
     }
 
+    @Test void policyDecisionCarriesConcertIdAndReturnsDecisionId()throws Exception{
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        String uuid=UUID.randomUUID().toString();
+        List<Map<String,Object>> requests=new ArrayList<>();
+        server.createContext("/api/v1/users/"+uuid+"/policy-decisions",e->{
+            Map<String,Object> request=json.readValue(e.getRequestBody().readAllBytes(),new TypeReference<Map<String,Object>>() {});
+            requests.add(request);
+            Map<String,Object> data=new LinkedHashMap<>(Map.of("action","DELAY","userId",uuid));
+            // 공연 ID 없이 온 요청에는 이전 BTS처럼 decisionId가 없는 응답을 돌려준다
+            if(request.containsKey("concertId")){data.put("decisionId",123);data.put("concertId",request.get("concertId"));}
+            byte[] body=json.writeValueAsBytes(Map.of("success",true,"code","COMMON_201","data",data));
+            e.sendResponseHeaders(201,body.length);e.getResponseBody().write(body);e.close();
+        });
+        server.start();
+        try{
+            var client=new BtsClient(new BtsSettings(true,"http://127.0.0.1:"+server.getAddress().getPort(),"service","test-only"),json);
+            assertEquals(new PolicyDecisionClient.Decision(PolicyDecisionClient.Action.DELAY,123L),client.decision(uuid,"QUEUE_JOIN","c1"));
+            assertEquals(Map.of("context","QUEUE_JOIN","concertId","c1"),requests.get(0));
+            assertEquals(new PolicyDecisionClient.Decision(PolicyDecisionClient.Action.DELAY,null),client.decision(uuid,"BOOKING_ATTEMPT",null));
+            assertEquals(Map.of("context","BOOKING_ATTEMPT"),requests.get(1));
+        }finally{server.stop(0);}
+    }
+
+    @Test void policyApplicationUsesItsOwnEndpointAndValidatesTheEchoedRecord()throws Exception{
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        String uuid=UUID.randomUUID().toString();
+        List<String> paths=new ArrayList<>();Set<Object> stored=new HashSet<>();
+        server.createContext("/api/v1/",e->{
+            paths.add(e.getRequestMethod()+" "+e.getRequestURI().getPath()+" "+e.getRequestHeaders().getFirst("X-API-Key"));
+            Map<String,Object> data=new LinkedHashMap<>(json.readValue(e.getRequestBody().readAllBytes(),new TypeReference<Map<String,Object>>() {}));
+            boolean created=stored.add(data.get("externalApplicationId"));
+            data.put("applicationId",55);
+            if("pa-mismatch".equals(data.get("externalApplicationId")))data.put("decisionId",999);
+            byte[] body=json.writeValueAsBytes(Map.of("success",true,"code",created?"COMMON_201":"COMMON_200","data",data));
+            e.sendResponseHeaders(created?201:200,body.length);e.getResponseBody().write(body);e.close();
+        });
+        server.start();
+        try{
+            var client=new BtsClient(new BtsSettings(true,"http://127.0.0.1:"+server.getAddress().getPort(),"service","test-only"),json);
+            Map<String,Object> record=new LinkedHashMap<>(Map.of("serviceId","service","externalApplicationId","pa-123-CHALLENGED","userId",uuid,
+                    "decisionId",123,"concertId","c1","action","REQUIRE_CAPTCHA","result","CHALLENGED","appliedAt","2026-11-24T13:07:12.123Z"));
+            assertEquals(55,client.sendPolicyApplication(json.writeValueAsString(record)));
+            // 같은 payload 재전송은 BTS가 200으로 기존 기록을 돌려주고, Demo는 그것도 성공으로 본다
+            assertEquals(55,client.sendPolicyApplication(json.writeValueAsString(record)));
+            assertEquals(List.of("POST /api/v1/policy-applications test-only","POST /api/v1/policy-applications test-only"),paths);
+            record.put("externalApplicationId","pa-mismatch");
+            var error=assertThrows(BtsClient.DeliveryFailure.class,()->client.sendPolicyApplication(json.writeValueAsString(record)));
+            assertEquals("INVALID_BTS_RESPONSE",error.code);assertFalse(error.retryable);
+        }finally{server.stop(0);}
+    }
+
     @Test void checkInEventCarriesTicketIdAndRejectsAResponseForAnotherTicket()throws Exception{
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         String uuid=UUID.randomUUID().toString();

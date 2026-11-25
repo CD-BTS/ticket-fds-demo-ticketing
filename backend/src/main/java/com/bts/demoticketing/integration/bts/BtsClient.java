@@ -51,12 +51,41 @@ public class BtsClient {
     }
     public PolicyDecisionClient.Action policy(String uuid){return policy(uuid,"QUEUE_JOIN");}
     /** context: QUEUE_JOIN(대기열 입장) 또는 BOOKING_ATTEMPT(좌석 선점). BTS는 결정과 문맥을 policy_decision에 기록한다. */
-    public PolicyDecisionClient.Action policy(String uuid,String context){
+    public PolicyDecisionClient.Action policy(String uuid,String context){return decision(uuid,context,null).action();}
+    /**
+     * 정책 결정 요청 (#67). concertId가 있으면 요청에 실어 BTS가 policy_decision.concert_id에 기록하게 한다.
+     * 응답의 decisionId는 실제 정책 적용 기록에 필요하다. 응답에 없으면 null이고 적용 기록을 만들지 않는다.
+     */
+    public PolicyDecisionClient.Decision decision(String uuid,String context,String concertId){
         if(!List.of("QUEUE_JOIN","BOOKING_ATTEMPT").contains(context))throw new IllegalArgumentException("Unknown policy context");
         try{UUID.fromString(uuid);}catch(RuntimeException e){throw new DeliveryFailure("INVALID_BTS_USER",false);}
-        Map<?,?> data=post("/api/v1/users/"+uuid+"/policy-decisions",json.writeValueAsString(Map.of("context",context)));
-        try{return PolicyDecisionClient.Action.valueOf(String.valueOf(data.get("action")));}
+        Map<String,Object> request=new LinkedHashMap<>();
+        request.put("context",context);
+        if(concertId!=null)request.put("concertId",concertId);
+        Map<?,?> data=post("/api/v1/users/"+uuid+"/policy-decisions",json.writeValueAsString(request));
+        PolicyDecisionClient.Action action;
+        try{action=PolicyDecisionClient.Action.valueOf(String.valueOf(data.get("action")));}
         catch(RuntimeException e){throw new DeliveryFailure("INVALID_BTS_POLICY",false);}
+        return new PolicyDecisionClient.Decision(action,positive(data.get("decisionId")));
+    }
+    private static Long positive(Object value){
+        try{long id=new BigInteger(String.valueOf(value)).longValueExact();return id>0?id:null;}
+        catch(RuntimeException e){return null;}
+    }
+    /**
+     * 실제 정책 적용 기록 전송 (#67, POST /api/v1/policy-applications). 행동 이벤트 API와 다른 endpoint이고
+     * BTS는 behavior_event에 쓰지 않는다. (serviceId, externalApplicationId)가 멱등 키라 같은 payload 재전송은 200이다.
+     */
+    public long sendPolicyApplication(String payload){
+        Map<?,?> data=post("/api/v1/policy-applications",payload);
+        Map<?,?> sent=json.readValue(payload,Map.class);
+        for(String key:List.of("serviceId","externalApplicationId","userId","concertId","action","result")){
+            if(!Objects.equals(sent.get(key),data.get(key)))throw new DeliveryFailure("INVALID_BTS_RESPONSE",false);
+        }
+        Long decision=positive(data.get("decisionId")),id=positive(data.get("applicationId"));
+        if(id==null||decision==null||!decision.equals(positive(sent.get("decisionId"))))
+            throw new DeliveryFailure("INVALID_BTS_RESPONSE",false);
+        return id;
     }
     /** 마이페이지 표시용 조회. 정책 결정(POST)과 달리 BTS에 아무것도 기록하지 않는다. */
     public record Account(Integer creditScore,String tier,Double anomalyScore,PolicyDecisionClient.Action latestAction){}

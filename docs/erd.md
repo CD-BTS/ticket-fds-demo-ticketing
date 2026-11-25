@@ -96,7 +96,8 @@ admission_tickets는 변경하지 않는다. 검표는 기존 status(ISSUED→CH
 outbox_events는 id PK와 user_id FK, service_id, external_event_id, business_transition_id, aggregate_id, event_type, occurred_at_utc, metadata JSON, payload LONGTEXT, delivery_status, lease_token, locked_until, retries, next_attempt_at, bts_event_id, last_error_code, created_at, sent_at을 저장한다.
 
 - UNIQUE(service_id,external_event_id), UNIQUE(business_transition_id,event_type).
-- ck_outbox_type: BOOKING/CANCEL/CHECK_IN/BOOKING_ATTEMPT.
+- ck_outbox_type: BOOKING/CANCEL/CHECK_IN/BOOKING_ATTEMPT/POLICY_APPLICATION.
+- POLICY_APPLICATION(#67)은 실제 정책 적용 기록이다. external_event_id는 BTS externalApplicationId인 `pa-{decisionId}-{result}`, business_transition_id는 `policy:{decisionId}:{result}`, aggregate_id는 `policy:{decisionId}`, occurred_at_utc는 적용 시각, metadata는 `{decisionId,concertId,action,result}`다. 전송 후 bts_event_id에는 BTS applicationId를 저장한다. 같은 결정의 같은 결과는 UNIQUE로 한 행만 남는다.
 - ck_outbox_status: PENDING/IN_FLIGHT/RETRY/SENT/FAILED.
 - ck_outbox_payload: payload IS NULL OR JSON_VALID(payload).
 - 최종 payload는 UUID 결합 후 한 번 고정한다. LONGTEXT는 재전송 body를 보존하고 metadata JSON은 원천 구조를 유지한다.
@@ -104,11 +105,13 @@ outbox_events는 id PK와 user_id FK, service_id, external_event_id, business_tr
 
 ## Redis 저장 구조
 
-대기열용 MySQL queue_entries/admissions 테이블은 없다. `QUEUE_KEY_PREFIX:{공연 ID의 Base64URL}:` 아래 waiting/waiting-delayed, deadlines, admitted, expired, sequence를 사용한다. 같은 공연 키는 Redis Cluster hash tag를 공유한다. CAPTCHA challenge/grant/replay도 같은 공연 namespace에서 TTL을 가진 HASH로 관리한다. grant는 사용자·공연·정책 action에 묶이며 등록 시 원자적으로 소비한다.
+대기열용 MySQL queue_entries/admissions 테이블은 없다. `QUEUE_KEY_PREFIX:{공연 ID의 Base64URL}:` 아래 waiting/waiting-delayed, deadlines, admitted, expired, sequence를 사용한다. 같은 공연 키는 Redis Cluster hash tag를 공유한다. CAPTCHA challenge/grant/replay도 같은 공연 namespace에서 TTL을 가진 HASH로 관리한다. grant는 사용자·공연·정책 action에 묶이며 등록 시 원자적으로 소비한다. challenge HASH는 user, action, answer, expiry, attempts와 함께 그 CAPTCHA를 요구한 BTS 정책 결정 ID(decision, BTS 모드가 아니면 빈 값)를 가진다(#67). 검증 결과 기록은 이 값을 쓴다.
 
 ## 스키마 적용
 
-Hibernate ddl-auto=none, spring.sql.init.mode=never다. Compose는 새 빈 볼륨에서 schema/seed/02/03/04를 초기화하며 기존 볼륨을 자동 마이그레이션하지 않는다. [04-booking-attempts.sql](../backend/db/04-booking-attempts.sql)은 MySQL 8.0.16+에서 Demo DB에 한 번만 적용한다. 두 attempt 테이블 생성과 Outbox CHECK 교체를 포함하며 반복 실행용 IF NOT EXISTS 스크립트가 아니다.
+Hibernate ddl-auto=none, spring.sql.init.mode=never다. Compose는 새 빈 볼륨에서 schema/seed/02/03/04/09를 초기화하며 기존 볼륨을 자동 마이그레이션하지 않는다.
+
+[09-policy-application-outbox.sql](../backend/db/09-policy-application-outbox.sql)은 02·04가 적용된 기존 DB에 한 번만 적용한다(#67). ck_outbox_type에 POLICY_APPLICATION을 추가할 뿐 기존 행·컬럼은 바꾸지 않는다. 적용 전에는 정책 적용 기록 적재만 CHECK에 걸려 실패하고(경고 로그), 대기열·CAPTCHA·예매는 그대로 동작한다. [04-booking-attempts.sql](../backend/db/04-booking-attempts.sql)은 MySQL 8.0.16+에서 Demo DB에 한 번만 적용한다. 두 attempt 테이블 생성과 Outbox CHECK 교체를 포함하며 반복 실행용 IF NOT EXISTS 스크립트가 아니다.
 
 [06-event-time-millis.sql](../backend/db/06-event-time-millis.sql)은 02·04가 적용된 기존 DB에만 한 번 적용한다(#44). outbox_events.occurred_at_utc와 booking_attempt_events.occurred_at을 DATETIME(3)로 넓히며 기존 값은 .000으로 유지된다. 새 볼륨은 이미 DATETIME(3)이므로 적용하지 않는다. BTS가 밀리초 occurredAt을 받는 버전(ticket-fds-admin #40)을 먼저 배포한다.
 

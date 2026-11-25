@@ -83,7 +83,8 @@ $demoEnv = @{
     CHECKIN_ENABLED = 'true'; TICKET_SECRET_KEY = $ticketSecret; GATE_API_KEY = $gateKey
     CHECKIN_OPENS_BEFORE = 'P365D'; CHECKIN_CHALLENGE_TTL = 'PT6S'
     BTS_ENABLED = 'true'; BTS_BASE_URL = "http://localhost:$BtsPort"; BTS_SERVICE_ID = 'demo-ticketing'; BTS_API_KEY = $serviceKey
-    BTS_CONCERT_SYNC_MS = '60000'; POLICY_DECISION_MODE = 'bts'; CAPTCHA_MODE = 'disabled'
+    # CAPTCHA는 mock(산술 문제): 정책 적용 기록(#67)의 CAPTCHA 요구·통과·실패를 외부 공급자 없이 검증한다.
+    BTS_CONCERT_SYNC_MS = '60000'; POLICY_DECISION_MODE = 'bts'; CAPTCHA_MODE = 'mock'
 }
 
 function Start-Backend([string]$name, [string]$dir, [hashtable]$vars) {

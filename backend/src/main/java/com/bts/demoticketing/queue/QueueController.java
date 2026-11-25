@@ -9,6 +9,8 @@ import com.bts.demoticketing.user.service.DemoAuthService;
 import com.bts.demoticketing.captcha.CaptchaService;
 import jakarta.validation.Valid;
 import com.bts.demoticketing.attempt.AttemptService;
+import com.bts.demoticketing.integration.bts.PolicyDecisionClient.Action;
+import com.bts.demoticketing.outbox.PolicyApplicationRecorder;
 
 @RestController
 @RequestMapping("/api/v1/concerts/{concertId}/queue")
@@ -17,7 +19,11 @@ public class QueueController {
     private final QueueService queue;
     private final CaptchaService captcha;
     private final AttemptService attempts;
-    public QueueController(DemoAuthService auth,QueueService queue,CaptchaService captcha,AttemptService attempts){this.auth=auth;this.queue=queue;this.captcha=captcha;this.attempts=attempts;}
+    private final PolicyApplicationRecorder applications;
+    public QueueController(DemoAuthService auth,QueueService queue,CaptchaService captcha,AttemptService attempts,
+            PolicyApplicationRecorder applications){
+        this.auth=auth;this.queue=queue;this.captcha=captcha;this.attempts=attempts;this.applications=applications;
+    }
     private void record(String attempt,String concert,com.bts.demoticketing.user.entity.DemoUser user,QueueStore.Snapshot snapshot){
         if(snapshot.status().equals("WAITING")||snapshot.status().equals("ADMITTED")){
             String generation=snapshot.expiresAt()==null?"none":Long.toString(snapshot.expiresAt().toEpochMilli());
@@ -40,7 +46,10 @@ public class QueueController {
             @RequestHeader(value="X-Booking-Attempt",required=false) String attempt,HttpServletRequest request){
         var user=auth.require(request);
         if(attempt!=null)attempts.check(attempt,user,concertId,false);
-        var challenge=captcha.challenge(concertId,user.id(),queue.captchaAction(concertId,user));
+        var decision=queue.captchaAction(concertId,user);
+        var challenge=captcha.challenge(concertId,user.id(),decision.action(),decision.decisionId());
+        // CAPTCHA를 실제로 제시한 시점 (#67). DELAY의 CAPTCHA는 BTS 계약상 기록할 결과가 없어 recorder가 건너뛴다.
+        applications.record(user,concertId,decision,"CHALLENGED");
         attempts.observe(attempt,user,concertId,"captcha:challenge:"+challenge.challengeId(),"CAPTCHA","ENTERED");
         return ApiResponse.success(challenge);
     }
@@ -54,9 +63,13 @@ public class QueueController {
         if(transition!=null)AttemptService.uuid(transition);
         queue.captchaAction(concertId,user);
         try{
-            var grant=captcha.verify(concertId,user.id(),body,transition);
+            var outcome=captcha.attempt(concertId,user.id(),body,transition);
+            // 결과 기록은 challenge를 발급한 결정에 붙인다 (#67). 위에서 다시 받은 결정이 아니다. 답을 실제로 판정받은
+            // 요청에만 decisionId가 있으므로, 동시 중복 제출·재전송·만료된 challenge는 기록되지 않는다.
+            applications.record(user,concertId,Action.REQUIRE_CAPTCHA,outcome.decisionId(),outcome.grant()==null?"FAILED":"PASSED");
+            if(outcome.grant()==null)throw new com.bts.demoticketing.common.exception.ApiException(ResponseCode.CAPTCHA_INVALID);
             attempts.observe(attempt,user,concertId,"captcha:verified:"+body.challengeId(),"CAPTCHA","SUCCEEDED");
-            return ApiResponse.success(grant);
+            return ApiResponse.success(outcome.grant());
         }catch(com.bts.demoticketing.common.exception.ApiException e){
             if(transition!=null&&e.getResponseCode()==ResponseCode.CAPTCHA_INVALID)
                 attempts.observe(attempt,user,concertId,"captcha:rejected:"+transition,"CAPTCHA","REJECTED","CAPTCHA_INVALID");

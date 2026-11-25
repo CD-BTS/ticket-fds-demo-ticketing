@@ -25,7 +25,9 @@ services:
     volumes:
       - ${ADMIN_REPO:-../../ticket-fds-admin}/backend/db/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", 'MYSQL_PWD=bts-e2e-only mysql -h127.0.0.1 -ubts_e2e fairticket_db -e "SELECT 1 FROM concert LIMIT 1" >/dev/null 2>&1']
+      # schema.sql의 마지막 테이블(#67 policy_application)까지 만들어졌는지 확인한다. 새 DB는 schema.sql만으로
+      # #62·#67 테이블과 컬럼을 모두 갖추므로 db/manual/*.sql(기존 DB용)은 적용하지 않는다.
+      test: ["CMD-SHELL", 'MYSQL_PWD=bts-e2e-only mysql -h127.0.0.1 -ubts_e2e fairticket_db -e "SELECT 1 FROM policy_application LIMIT 1" >/dev/null 2>&1']
       start_period: 30s
       interval: 3s
       timeout: 5s
@@ -54,8 +56,11 @@ services:
       # #53 QR 검표 시나리오: 기기 바인딩과 검표 챌린지 테이블
       - ../backend/db/05-ticket-device-binding.sql:/docker-entrypoint-initdb.d/60-ticket-device-binding.sql:ro
       - ../backend/db/07-checkin-challenges.sql:/docker-entrypoint-initdb.d/70-checkin-challenges.sql:ro
+      # #67 정책 적용 기록: Outbox event_type CHECK에 POLICY_APPLICATION 추가
+      - ../backend/db/09-policy-application-outbox.sql:/docker-entrypoint-initdb.d/80-policy-application-outbox.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", 'MYSQL_PWD=demo-e2e-only mysql -h127.0.0.1 -udemo_e2e demo_ticketing_db -e "SELECT 1 FROM ticket_checkin_challenges LIMIT 1" >/dev/null 2>&1']
+      # 마지막 초기화 스크립트(09)까지 끝났는지 확인한다.
+      test: ["CMD-SHELL", 'MYSQL_PWD=demo-e2e-only mysql -h127.0.0.1 -udemo_e2e demo_ticketing_db -N -e "SELECT 1 FROM information_schema.check_constraints WHERE constraint_schema=DATABASE() AND constraint_name=''ck_outbox_type'' AND check_clause LIKE ''%POLICY_APPLICATION%''" 2>/dev/null | grep -q 1']
       start_period: 30s
       interval: 3s
       timeout: 5s

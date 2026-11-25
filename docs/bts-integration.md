@@ -71,17 +71,50 @@ BOOKING_ATTEMPT는 [예매 시도 명세](booking-attempts.md)를 따른다. COM
 
 HTTP 연결 timeout은 2초, 요청 timeout은 3초이며 redirect를 따라가지 않는다. 응답 형식 오류는 응답 상태와 검증 지점에 따라 재시도 또는 실패 처리한다. 오류 원문 대신 제한된 안전 코드만 저장한다.
 
-같은 예매의 앞선 이벤트가 SENT가 되어야 CANCEL을 보낸다. FAILED BOOKING을 새 ID로 우회하지 않는다. BOOKING_ATTEMPT는 업무 그룹 선행 실패에 막히지 않고 독립 전송한다. 도착 순서는 보장하지 않으며 조회에서 sequence로 현재 단계를 복원한다. 재시도로 externalEventId·occurredAt·metadata·동결 payload를 바꾸지 않는다.
+같은 예매의 앞선 이벤트가 SENT가 되어야 CANCEL을 보낸다. FAILED BOOKING을 새 ID로 우회하지 않는다. BOOKING_ATTEMPT와 POLICY_APPLICATION은 업무 그룹 선행 실패에 막히지 않고 독립 전송한다. 도착 순서는 보장하지 않으며 조회에서 sequence로 현재 단계를 복원한다. 재시도로 externalEventId·occurredAt·metadata·동결 payload를 바꾸지 않는다.
 
 운영 재처리는 원인과 기존 BTS 레코드를 확인한 뒤 같은 ID/payload를 유지해야 한다. 공개 재처리 API는 없다. API Key 교체·UUID 초기화·BTS DB 직접 수정으로 오류를 우회하지 않는다.
 
 ## 원격 정책 API
 
-POLICY_DECISION_MODE=bts는 BTS UUID를 확보하고 `POST /api/v1/users/{uuid}/policy-decisions`에 `{ "context": "QUEUE_JOIN" }`을 전송한다. X-API-Key는 서버 설정을 사용하며 `data.action`은 ALLOW/REQUIRE_CAPTCHA/DELAY/RESTRICT 중 하나여야 한다. latestAction 조회를 신규 결정 대신 사용하지 않는다.
+POLICY_DECISION_MODE=bts는 BTS UUID를 확보하고 `POST /api/v1/users/{uuid}/policy-decisions`에 `{ "context": "QUEUE_JOIN", "concertId": "<공연 public_id>" }`를 전송한다(#67). X-API-Key는 서버 설정을 사용하며 `data.action`은 ALLOW/REQUIRE_CAPTCHA/DELAY/RESTRICT 중 하나여야 한다. `data.decisionId`는 적용 기록에 쓰려고 함께 읽는다. 응답에 없으면(이전 BTS) 정책은 그대로 적용하고 적용 기록만 만들지 않는다. latestAction 조회를 신규 결정 대신 사용하지 않는다.
 
 정책 호출 코드와 원격 endpoint 배포는 별개의 조건이다. 배포 대상 BTS가 endpoint를 제공해야 bts 모드를 사용할 수 있다. 원격 장애·알 수 없는 응답은 입장 허용으로 바꾸지 않고 503으로 처리한다. disabled는 ALLOW, mock은 인증된 Demo 공개 ID에 대한 서버 설정을 사용한다. 활성 WAITING/ADMITTED는 정책을 재적용하지 않는다.
 
-좌석 선점(`POST /api/v1/concerts/{concertId}/seat-holds`) 직전에도 같은 API를 `{ "context": "BOOKING_ATTEMPT" }`로 호출한다(#46). CAPTCHA·후순위는 대기열에서 이미 적용했으므로 예매 단계에서는 RESTRICT만 403/BOOKING_RESTRICTED로 거부한다. 사용자는 대기열 정책을 이미 통과했으므로 예매 단계의 원격 장애·알 수 없는 응답은 선점을 허용하고 로그만 남긴다. 호출은 좌석 잠금·DB 트랜잭션 밖에서 한다. disabled/mock 모드는 대기열과 같은 결정을 쓴다.
+좌석 선점(`POST /api/v1/concerts/{concertId}/seat-holds`) 직전에도 같은 API를 `{ "context": "BOOKING_ATTEMPT", "concertId": ... }`로 호출한다(#46, #67). CAPTCHA·후순위는 대기열에서 이미 적용했으므로 예매 단계에서는 RESTRICT만 403/BOOKING_RESTRICTED로 거부한다. 사용자는 대기열 정책을 이미 통과했으므로 예매 단계의 원격 장애·알 수 없는 응답은 선점을 허용하고 로그만 남긴다. 호출은 좌석 잠금·DB 트랜잭션 밖에서 한다. disabled/mock 모드는 대기열과 같은 결정을 쓴다.
+
+## 정책 적용 기록 (#67)
+
+BTS는 정책을 결정만 하고, 그 정책이 실제로 적용됐는지는 Demo만 안다. Demo는 정책이 **실제로 적용된 순간**에만 `POST /api/v1/policy-applications`로 기록을 보낸다(ticket-fds-admin `docs/policy-application-integration.md`). 정책 응답을 받은 것만으로는 보내지 않는다. 이 기록은 행동 이벤트가 아니다. `/api/v1/events`로 보내지 않으므로 BTS behavior_event·AI 평가 대상·Credit 산출에 들어가지 않는다.
+
+| action | result | 기록 시점 | 쓰는 decisionId |
+|---|---|---|---|
+| REQUIRE_CAPTCHA | CHALLENGED | captcha-challenges가 challenge를 발급한 때 | 그 발급 요청의 결정 |
+| REQUIRE_CAPTCHA | PASSED / FAILED | captcha-verifications가 성공 / CAPTCHA_INVALID로 끝난 때 | challenge를 발급한 결정(challenge HASH의 decision) |
+| DELAY | DELAYED | 대기열 입장이 후순위 그룹(waiting-delayed)에 새로 배치한 때. 빈자리가 있어 곧바로 입장해도 배치는 기록한다 | 그 입장 요청의 결정 |
+| RESTRICT | BLOCKED | 대기열 입장이 QUEUE_RESTRICTED로, 또는 좌석 선점이 BOOKING_RESTRICTED로 거부된 때 | 그 요청의 결정 |
+
+기록하지 않는 경우는 다음과 같다.
+
+- ALLOW, 그리고 정책 결정만 받고 사용자가 이탈한 경우(입장이 CAPTCHA_REQUIRED로 거부됐을 뿐 challenge를 받지 않은 경우 포함).
+- 이미 WAITING/ADMITTED인 사용자의 재요청, 동시 요청으로 Lua가 정책을 다시 적용하지 않은 경우(created=false).
+- BTS 장애로 좌석 선점을 그대로 허용한 경우.
+- DELAY 결정의 CAPTCHA 요구·통과·실패. BTS는 적용 기록의 action이 결정의 action과 같아야 하고 DELAY에는 DELAYED만 받으므로, 현재 계약으로는 기록할 수 없다. DELAY 사용자가 CAPTCHA에서 이탈하면 기록이 없다.
+- 답을 실제로 판정받지 않은 검증 요청: 다른 사용자의 challenge, 만료된 challenge, 이미 소비된 challenge(정답의 동시 중복 제출 포함), 같은 X-Attempt-Transition 재전송. 응답은 CAPTCHA_INVALID 또는 원래 결과지만 오답이 아니므로 FAILED가 아니다. 판정 여부와 귀속할 decisionId는 검증과 같은 Lua 실행에서 정한다.
+- captcha API가 QUEUE_RESTRICTED로 거부한 경우.
+- mock/disabled 모드(decisionId가 없다).
+
+CAPTCHA 발급·검증·재입장은 각각 정책을 다시 요청해 서로 다른 decisionId를 받는다. CHALLENGED와 PASSED/FAILED는 모두 challenge를 발급한 결정에 붙이므로 BTS 통계에서 적용 1회로 집계된다. challenge는 공연 namespace 안에 있고 사용자에게 묶여 있어 같은 사용자의 여러 공연·여러 시도가 섞이지 않는다.
+
+적재와 전송은 기존 Outbox를 쓴다.
+
+- 적용이 확정된 뒤 `outbox_events`에 `POLICY_APPLICATION` 행을 별도 트랜잭션으로 넣는다. externalApplicationId는 `pa-{decisionId}-{result}`로 적재할 때 한 번 정한다.
+- 같은 결정의 같은 결과는 한 행만 남는다. 재전송·중복 요청·같은 challenge의 반복 실패는 합쳐지고, 실제 반복 적용은 새 결정이라 새 행이 된다. BTS 관리자 통계의 CAPTCHA 결과도 "고유 결정 수"라서 의미가 같다: `captcha.failed`는 오답 제출 횟수가 아니라 한 번 이상 실패한 challenge(결정) 수이고, 실패 후 통과한 결정은 passed와 failed에 모두 잡힌다.
+- 전송 본문은 `{serviceId, externalApplicationId, userId, decisionId, concertId, action, result, appliedAt}`이고 appliedAt은 밀리초까지의 UTC ISO 8601 Z다. payload 동결·lease·재시도는 이벤트와 같다. 응답의 식별 필드와 applicationId를 검증한 뒤 SENT로 기록하고 bts_event_id에 applicationId를 저장한다.
+- BOOKING_ATTEMPT처럼 업무 그룹 순서에 묶이지 않고 독립 전송한다.
+- BTS가 같은 키의 재전송에 200을 주면 성공이다. 404·409 등은 즉시 FAILED로 두고 다시 보내지 않는다.
+
+Redis의 정책 적용과 MySQL 적재는 한 트랜잭션이 아니다. 적재는 적용 결과를 확인한 뒤에만 하므로 적용 없이 기록만 남는 일은 없다. 반대로 적용 뒤 적재가 실패하거나 프로세스가 중단되면 그 기록은 빠지고(경고 로그), 통계가 그만큼 적게 집계된다. 적재·전송 실패는 대기열·CAPTCHA·예매 응답을 바꾸지 않는다.
 
 ## 공연 동기화
 
@@ -103,7 +136,7 @@ BTS_ENABLED=true이고 DEMO_JOBS_ENABLED=true이면 기동 직후와 BTS_CONCERT
 | CHECKIN_OPENS_BEFORE | PT2H; 공연 시작 전 입장 허용 시간 |
 | DEVICE_CHALLENGE_TTL / DEVICE_MAX_CHANGES | PT2M / 3 |
 | CHECKIN_CHALLENGE_TTL | PT15S; 검표 스캔 후 등록 기기가 챌린지에 응답해야 하는 시간 |
-| POLICY_DECISION_MODE | disabled/mock/bts; bts는 대기열(QUEUE_JOIN)과 좌석 선점(BOOKING_ATTEMPT) 두 시점에 호출 |
+| POLICY_DECISION_MODE | disabled/mock/bts; bts는 대기열(QUEUE_JOIN)과 좌석 선점(BOOKING_ATTEMPT) 두 시점에 호출. 정책 적용 기록은 bts 모드에서만 생성하며 09 스키마 적용이 필요 |
 | BTS_CONCERT_SYNC_MS | 600000; 공연 BTS 동기화 주기(ms) |
 | CAPTCHA_MODE | disabled/mock/hcaptcha; hcaptcha는 HCAPTCHA_SITE_KEY·HCAPTCHA_SECRET 필수 |
 | HCAPTCHA_SITE_KEY | hcaptcha 모드에서 필수; 브라우저 위젯에 전달되는 공개 키 |
