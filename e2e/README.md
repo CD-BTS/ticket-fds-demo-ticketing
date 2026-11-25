@@ -45,12 +45,21 @@ cd e2e
 | `outage` | BTS 프로세스 중지 중<br>· 신규 대기열 입장 503<br>· 이미 입장한 사용자의 좌석 선점은 허용<br>· 이벤트는 Outbox에 RETRY로 남음<br>BTS 재기동 후: 전부 재전송, 유실·중복 없음 |
 | `replay` | 같은 이벤트를 다시 보내면 200이고 저장 건수는 그대로. 같은 ID에 다른 내용이면 409 |
 | `concurrency` | 8명이 같은 좌석을 동시에 선점<br>· 1명만 201, 나머지 409<br>· 모든 이벤트가 BTS에 1회씩 저장<br>· 실패한 7건이 SEAT_HOLD/REJECTED로 기록 |
-
+| `ai` | (`-AiUrl`로 기동한 경우만) 정상 사용자와 매크로형 사용자(짧고 일정한 간격 시도 12번)를 만든 뒤 다음을 확인<br>· BTS가 ticket-fds-ai로 평가해 두 사용자 모두 OK<br>· 정상 사용자 점수 0.5 미만, 매크로형 0.5 이상<br>· Credit 반영과 `credit_history` 기록<br>· 관리자 사용자 상세에 최신 점수 표시<br>· 매크로형 사용자의 다음 대기열 입장이 AI 점수 근거로 ALLOW가 아님 |
 | `checkin` | 예매 → 기기 등록 → QR 생성 → 스캔 → 챌린지 서명 → 입장 확정 후 다음을 확인<br>· 잘못된 QR·만료된 TOTP·미등록 기기 서명·만료/재사용 챌린지·중복 검표 거부, 실패 시 티켓 상태 불변<br>· 티켓 `CHECKED_IN`, `checked_in_at` 기록<br>· Outbox `CHECK_IN`이 스케줄러로 전송돼 SENT<br>· BTS `behavior_event` 저장, 사용자·티켓·예매·공연·발생 시각 매핑<br>· 재전송 시 중복 저장 없음<br>· 관리자·서비스 API의 CHECK_IN 조회와 프론트엔드 타입 일치 |
 
 `checkin` 시나리오는 스크립트가 브라우저 기기 역할을 합니다. ECDSA P-256 키를 만들고 실제 API로 등록한 뒤 QR과 챌린지 응답에 직접 서명합니다(`E2E-Common.ps1`). 서버의 인증·서명 검증은 우회하지 않습니다.
 
-`restrict` 시나리오는 실제 AI 점수 대신 BTS DB에 직접 위험도를 넣습니다(`credit_score=10`, `anomaly_score=0.93`). ticket-fds-admin#40의 AI 추론 연동이 끝나면 이 부분을 실제 점수로 바꿔야 합니다.
+`restrict` 시나리오는 RESTRICT 경계(Credit 20 미만 + 이상 점수 0.85 이상)를 확실히 만들려고 BTS DB에 위험도를 직접 넣습니다(`credit_score=10`, `anomaly_score=0.93`). 실제 AI 점수로 이어지는 흐름은 `ai` 시나리오가 검증합니다.
+
+### AI 연동 시나리오 (`ai`, #62)
+ticket-fds-ai 서버를 먼저 띄운 뒤 `-AiUrl`로 기동합니다. 그러면 BTS가 `AI_ENABLED=true`, `AI_POLL_MS=5000`으로 실행됩니다(ticket-fds-admin `docs/ai-design.md`).
+```powershell
+# ticket-fds-ai 저장소에서: python train_fds_model.py; uvicorn app.main:app --port 8000  (또는 Docker 이미지)
+.\Start-E2E.ps1 -AiUrl http://127.0.0.1:8000
+.\Run-Scenarios.ps1                 # -AiUrl 없이 기동하면 ai 시나리오는 [SKIP]
+```
+e2e는 모든 예매가 127.0.0.1과 공용 테스트 결제수단으로 들어옵니다. 그래서 예매한 사용자의 `ipBookingDensity`·`cardReuseCount`는 다른 시나리오 사용자 수만큼 커지고, 이상 점수도 올라갑니다. `ai` 시나리오의 정상 사용자는 이 영향을 받지 않도록 예매하지 않고 시도만 합니다.
 
 결과와 발견 사항:
 - [docs/e2e-result-2026-11-19.md](../docs/e2e-result-2026-11-19.md) (#47)
