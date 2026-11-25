@@ -43,6 +43,10 @@ public class AttemptService {
     private void requireEnabled(){if(!enabled)throw error(ResponseCode.SERVICE_UNAVAILABLE);}
     public record Snapshot(String attemptId,String concertId,String stage,String status,long sequence,String holdId,String bookingId){}
     public Snapshot start(String concert,String id,DemoUser user,String clickedAt){
+        return start(concert,id,user,clickedAt,null);
+    }
+    /** ipAddress: 이 요청에서 서버가 관측한 클라이언트 IP (#68). 없으면(null) metadata에 넣지 않는다. */
+    public Snapshot start(String concert,String id,DemoUser user,String clickedAt,String ipAddress){
         requireEnabled();uuid(id);
         if(clickedAt!=null){try{OffsetDateTime.parse(clickedAt);}catch(RuntimeException e){throw error(ResponseCode.INVALID_REQUEST);}}
         return tx.execute(s->{
@@ -54,7 +58,7 @@ public class AttemptService {
                 """,id,user.id(),c,user.serviceId(),now());
             check(id,user,concert,true);
             Map<String,Object> extra=new LinkedHashMap<>();if(clickedAt!=null)extra.put("clientOccurredAt",clickedAt);
-            append(id,"start","STARTED","ENTERED","CLIENT_REPORT",extra);
+            append(id,"start","STARTED","ENTERED","CLIENT_REPORT",extra,ipAddress);
             return snapshot(id,user);
         });
     }
@@ -94,6 +98,9 @@ public class AttemptService {
             """,(r,n)->new Snapshot(id,r.getString("concert"),r.getString("stage"),r.getString("status"),r.getLong("sequence_no"),r.getString("hold"),r.getString("booking")),id).get(0);
     }
     public Snapshot client(String id,DemoUser user,String transition,String stage,String status){
+        return client(id,user,transition,stage,status,null);
+    }
+    public Snapshot client(String id,DemoUser user,String transition,String stage,String status,String ipAddress){
         requireEnabled();uuid(transition);
         return tx.execute(s->{
             check(id,user,null,true);
@@ -104,7 +111,7 @@ public class AttemptService {
                 String holdState=jdbc.queryForObject("SELECT status FROM seat_holds WHERE public_id=?",String.class,current.holdId());
                 if("ACTIVE".equals(holdState)||"CONVERTED".equals(holdState))throw error(ResponseCode.DATA_CONFLICT);
             }
-            append(id,transition,stage,status,"CLIENT_REPORT",Map.of());return snapshot(id,user);
+            append(id,transition,stage,status,"CLIENT_REPORT",Map.of(),ipAddress);return snapshot(id,user);
         });
     }
     /** Used before business work; the caller already owns a reservation transaction. */
@@ -147,6 +154,14 @@ public class AttemptService {
         catch(RuntimeException e){org.slf4j.LoggerFactory.getLogger(AttemptService.class).warn("Attempt observation not persisted; retry from authoritative state");}
     }
     private void append(String id,String transition,String stage,String status,String source,Map<String,Object> extra){
+        append(id,transition,stage,status,source,extra,null);
+    }
+    /**
+     * ipAddress는 클라이언트 요청으로 생긴 전이(시작, 화면 단계 보고)에만 주어진다 (#68). 서버 관측·주기 작업 전이는 null이다.
+     * 요청 지문(fingerprint)에는 넣지 않는다: 같은 전이를 다른 네트워크에서 다시 보내도 같은 요청이고,
+     * 재전송은 새 이벤트를 만들지 않으므로 처음 기록한 IP가 그대로 남는다.
+     */
+    private void append(String id,String transition,String stage,String status,String source,Map<String,Object> extra,String ipAddress){
         var a=jdbc.queryForMap("SELECT * FROM booking_attempts WHERE attempt_id=? FOR UPDATE",id);
         String signature=fingerprint(stage+"|"+status+"|"+source+"|"+json.writeValueAsString(new TreeMap<>(extra)));
         if(replayed(id,transition,stage,status,source,extra))return;
@@ -158,6 +173,7 @@ public class AttemptService {
         if(a.get("hold_id")!=null)m.putIfAbsent("holdId",jdbc.queryForObject("SELECT public_id FROM seat_holds WHERE id=?",String.class,a.get("hold_id")));
         if(a.get("booking_id")!=null)m.putIfAbsent("bookingId",jdbc.queryForObject("SELECT public_id FROM bookings WHERE id=?",String.class,a.get("booking_id")));
         if(status.equals("ABANDONED"))m.putIfAbsent("reasonCode","USER_CANCELLED");
+        if(ipAddress!=null)m.put("ipAddress",ipAddress);
         m.put("attemptId",id);m.put("transitionId",transition);m.put("concertId",concert);m.put("stage",stage);
         m.put("status",status);m.put("sequence",sequence);m.put("source",source);m.put("recordedAt",at.toInstant(ZoneOffset.UTC).toString());
         String metadata=json.writeValueAsString(m);

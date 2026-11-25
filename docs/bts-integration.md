@@ -42,7 +42,7 @@ BTS는 `(serviceId,externalEventId)`로 중복을 구분한다. 같은 ID·같�
 |---|---|---|
 | BOOKING | 유효한 hold로 예매 확정 commit | concertId,performanceStartsAt,performanceEndsAt,ticketIds,bookingDurationSeconds,paymentIdentifier,ipAddress, 연결된 경우 attemptId |
 | CANCEL | CONFIRMED→CANCELLED commit | concertId,performanceStartsAt,performanceEndsAt,ticketIds, 연결된 경우 attemptId |
-| BOOKING_ATTEMPT | 예매 시작·클라이언트 관측·서버 확인 단계 journal | attemptId,transitionId,concertId,stage,status,sequence,source,recordedAt 및 문맥 필드 |
+| BOOKING_ATTEMPT | 예매 시작·클라이언트 관측·서버 확인 단계 journal | attemptId,transitionId,concertId,stage,status,sequence,source,recordedAt 및 문맥 필드. 시작·단계 보고 요청에서 생긴 이벤트는 ipAddress 포함(#68) |
 | CHECK_IN | 서버 검표 확정(등록 기기의 챌린지 서명 검증 후 ISSUED→CHECKED_IN) commit | concertId,performanceStartsAt,performanceEndsAt,deviceChanged; top-level ticketId와 bookingId |
 
 bookingDurationSeconds는 hold 생성~서버 확정의 0 이상 number다. paymentIdentifier는 허용된 테스트 식별자이며 카드번호/hash를 대신 수집하지 않는다. ipAddress는 서버가 관측한 요청 peer다. TRUSTED_PROXIES에 지정한 프록시를 거친 요청은 X-Forwarded-For에서 신뢰 프록시가 아닌 첫 주소(오른쪽부터)를 쓴다(#64). 그 외에는 Forwarded/X-Forwarded-For를 사용하지 않는다. 공연 시각·ticketIds는 예매 snapshot에서 얻으며 실제 참석 사실을 의미하지 않는다.
@@ -50,6 +50,8 @@ bookingDurationSeconds는 hold 생성~서버 확정의 0 이상 number다. payme
 일반 이벤트의 metadata.bookingDurationSeconds는 제공되면 0 이상 숫자, metadata.deviceChanged는 제공되면 boolean이어야 한다. Feature 원천 전달과 BTS Feature 계산은 별개다. 브라우저 클릭·QR 표시·선점 만료를 BOOKING/CANCEL/CHECK_IN으로 만들어 보내지 않는다.
 
 CHECK_IN은 검표 API가 티켓을 최초로 CHECKED_IN으로 바꾼 트랜잭션에서만 생성한다. QR 스캔(챌린지 발급)만으로는 생성되지 않으며, 등록 기기가 챌린지에 올바르게 서명해 입장이 확정된 때에만 생성된다. 거부된 스캔·중복 스캔·응답 없는(만료된) 스캔·잘못된 응답·QR 표시는 이벤트가 아니다. payload 형식은 바뀌지 않았다. occurredAt은 서버 검표 시각(밀리초 단위)이다. Outbox의 aggregate_id는 예매 ID라서 같은 예매의 BOOKING이 SENT된 뒤 전송되고, business_transition_id는 `<ticketId>:CHECK_IN`이라 좌석별로 한 건씩 생성된다. 전송 시 원천 metadata의 ticketId를 top-level로 옮기고 응답의 ticketId도 검증한다. `deviceChanged`는 검표에 쓰인 기기가 최초 등록 기기가 아니면 true다. TOTP 비밀키·서명·QR 원문·챌린지는 싣지 않는다.
+
+BOOKING_ATTEMPT의 ipAddress는 BOOKING과 같은 기준(ClientIpResolver)으로 정하되, 시작 API와 단계 보고 API 요청에서 생긴 이벤트에만 싣는다(#68). 서버 관측·주기 작업 이벤트에는 없다. 주소를 해석하지 못하면 BOOKING은 400으로 거부하지만 BOOKING_ATTEMPT는 이벤트를 그대로 기록하고 ipAddress만 뺀다. BTS는 BOOKING_ATTEMPT의 IP를 Credit IP 집중도 감점(최근 10분 같은 IP의 고유 시도 5건 이상)에, BOOKING의 IP를 AI Feature ip_booking_density(30일 같은 IP 고유 예매 계정 수)에 쓴다. 두 값은 서로 대신하지 않는다. 자세한 기록 범위와 멱등성은 [예매 시도 명세](booking-attempts.md)에 있다.
 
 BOOKING_ATTEMPT는 [예매 시도 명세](booking-attempts.md)를 따른다. COMPLETED/SUCCEEDED는 metadata.bookingId로 실제 확정 예매를 연결한다. BOOKING/CANCEL은 top-level bookingId를 유지하고 metadata.attemptId만 추가한다. 기존에 동결된 payload를 소급 수정하지 않는다.
 

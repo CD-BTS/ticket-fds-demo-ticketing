@@ -37,7 +37,34 @@ booking_attempts는 현재 stage/status/sequence와 nullable hold/booking을 저
 
 필수 필드는 `attemptId,transitionId,concertId,stage,status,sequence,source,recordedAt`이다. source는 SERVER 또는 CLIENT_REPORT, sequence는 1 이상 정수다. STARTED/ENTERED는 sequence 1이며 COMPLETED는 SUCCEEDED와 실제 bookingId를 요구한다.
 
-연결에 따라 holdId/bookingId, 확인된 실패 reasonCode, 시작 시 clientOccurredAt을 추가한다. 사용자 UUID는 최상위 userId, 서비스는 최상위 serviceId에 넣는다. BOOKING_ATTEMPT에는 가짜 top-level bookingId를 넣지 않는다. API Key·CAPTCHA 답/토큰·원문 카드번호·deviceId를 단계 metadata에 저장하지 않는다.
+연결에 따라 holdId/bookingId, 확인된 실패 reasonCode, 시작 시 clientOccurredAt, 클라이언트 요청 전이의 ipAddress를 추가한다. 사용자 UUID는 최상위 userId, 서비스는 최상위 serviceId에 넣는다. BOOKING_ATTEMPT에는 가짜 top-level bookingId를 넣지 않는다. API Key·CAPTCHA 답/토큰·원문 카드번호·deviceId를 단계 metadata에 저장하지 않는다.
+
+### ipAddress (#68)
+
+클라이언트 요청으로 생긴 전이에만 `ipAddress`를 싣는다.
+
+| 전이 | ipAddress |
+|---|---|
+| STARTED/ENTERED (시작 API) | 그 요청의 클라이언트 IP |
+| SEAT_SELECTION·PAYMENT/ENTERED, ABANDONED (단계 보고 API) | 그 요청의 클라이언트 IP |
+| 서버 관측 전이(CAPTCHA, QUEUE, SEAT_HOLD, COMPLETED)와 주기 작업 전이(만료·reconcile) | 없음 |
+
+- 값은 예매 확정(BOOKING)과 같은 `ClientIpResolver` 기준이다. 연결 peer를 쓰고, TRUSTED_PROXIES에 지정한 프록시를 거친 요청만 X-Forwarded-For에서 신뢰 프록시가 아닌 첫 주소를 쓴다. 요청마다 관측한 값이므로 시작과 단계 보고의 IP가 다를 수 있다.
+- 주소를 해석하지 못하면 예매 시도와 단계 기록은 그대로 진행하고 `ipAddress` 키만 뺀다(빈 값을 넣지 않는다). 서버에는 경고 로그 한 줄만 남기며 요청 헤더나 인증 정보는 남기지 않는다. 예매 확정은 지금처럼 해석 실패를 400으로 거부한다.
+- 요청 지문에는 넣지 않는다. 같은 attempt/transition을 다른 네트워크에서 다시 보내도 같은 요청으로 보고 기존 결과를 반환하며, 새 이벤트를 만들지 않으므로 처음 기록한 IP가 그대로 남는다. 단계·상태·clientOccurredAt이 실제로 다르면 지금처럼 DATA_CONFLICT다.
+- journal metadata가 Outbox로 그대로 옮겨지고 payload가 동결되므로 재전송에서도 IP가 바뀌지 않는다. #68 이전에 기록된 이벤트에는 소급하지 않는다.
+
+BTS는 이 값을 Credit 룰 감점(IP 집중도)에만 쓴다. AI Feature와는 다른 값이다.
+
+| | Credit IP 집중도 감점 | AI Feature ip_booking_density |
+|---|---|---|
+| 원천 이벤트 | BOOKING_ATTEMPT의 metadata.ipAddress | BOOKING의 metadata.ipAddress |
+| 기간 | 평가 시각 직전 10분 | 최근 30일 |
+| 값 | 사용자가 쓴 IP마다 같은 서비스·같은 IP의 **고유 attemptId 수**의 최댓값 | 사용자가 예매에 쓴 IP마다 같은 IP로 예매한 **고유 계정 수**의 최댓값 |
+| 사용 | 5 이상이면 Credit 5점 감점 | AI 모델 입력 |
+| IP 없음 | 판단하지 않음(감점 없음) | 1 |
+
+한 시도의 단계 이벤트가 여러 건이어도 1건으로 세고, 같은 IP를 쓰는 다른 계정의 시도도 함께 센다. 기준과 계산은 BTS(ticket-fds-admin)에 있다. 프록시·NAT 뒤에서 TRUSTED_PROXIES를 설정하지 않으면 모든 사용자가 프록시 주소 하나로 기록되어 함께 감점될 수 있다.
 
 ## 브라우저 재전송
 

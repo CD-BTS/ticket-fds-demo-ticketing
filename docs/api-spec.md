@@ -78,6 +78,8 @@ paymentIdentifier는 TEST_PAYMENT_IDENTIFIERS의 서버 허용 목록 값이며 
 
 AttemptSnapshot은 `{attemptId,concertId,stage,status,sequence,holdId,bookingId}`다. BOOKING_ATTEMPTS_ENABLED=false이면 capability만 false를 반환하고 attempt API는 503이며 기존 attempt 없는 예매는 유지한다. 상세 전이와 멱등성은 [예매 시도 명세](booking-attempts.md)를 따른다.
 
+시작(PUT)과 단계 보고(POST transitions) 요청은 서버가 관측한 클라이언트 IP를 BTS 이벤트 metadata.ipAddress로 기록한다(#68). 기준은 예매 확정과 같다(연결 peer, TRUSTED_PROXIES의 프록시를 거친 요청만 X-Forwarded-For). 요청·응답 형식은 바뀌지 않으며 클라이언트가 IP를 보내지 않는다. 주소를 해석하지 못해도 요청은 성공하고 IP만 기록하지 않는다. 같은 transition의 재요청은 IP가 달라도 기존 결과를 반환한다.
+
 ## 티켓과 동적 QR
 
 예매 좌석 1개가 티켓 1장(`admission_tickets`)이다. 티켓마다 활성 기기를 1대 등록하고, 등록된 기기가 30초마다 QR을 직접 만든다. 서버는 QR을 발급하지 않는다. 검표는 QR 스캔 뒤 등록 기기가 서버 챌린지에 개인키로 서명해야 확정된다. CHECKIN_ENABLED=false이면 아래 API는 모두 503/SERVICE_UNAVAILABLE이며 기존 예매·취소는 영향이 없다.
