@@ -70,6 +70,8 @@ $demoEnv = @{
     TRUSTED_PROXIES = '127.0.0.1,::1'
     TEST_PAYMENT_IDENTIFIERS = ($payIds -join ',')
 }
+$btsEnv.SERVER_ADDRESS = '127.0.0.1'
+$demoEnv.SERVER_ADDRESS = '127.0.0.1'
 
 function Start-Logged([string]$name, [string]$file, [string[]]$arguments, [string]$dir, [hashtable]$vars) {
     if (Test-ProcessAlive $name) {
