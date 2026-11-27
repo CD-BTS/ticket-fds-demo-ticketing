@@ -95,9 +95,9 @@ function Start-Logged([string]$name, [string]$file, [string[]]$arguments, [strin
 
 if ($Only -in @('all', 'bts')) {
     if ($AiOff) { Write-Output 'BTS: AI 평가 스케줄러 꺼짐 (대량 적재 모드)' }
-    Start-Logged 'bts' (Join-Path $AdminRepo 'backend\gradlew.bat') @('bootRun', '--console=plain') (Join-Path $AdminRepo 'backend') $btsEnv | Out-Null
+    $started = Start-Logged 'bts' (Join-Path $AdminRepo 'backend\gradlew.bat') @('bootRun', '--console=plain') (Join-Path $AdminRepo 'backend') $btsEnv | Select-Object -Last 1
     if (-not (Wait-Http "http://localhost:$($SC.BtsPort)/api/v1/users" 300)) { throw "BTS 서버가 응답하지 않습니다. $RunDir\bts.log 확인" }
-    Set-Content -Path (Join-Path $RunDir 'bts.mode') -Value $(if ($AiOff) { 'ai-off' } else { 'ai-on' })
+    if ($started) { Set-Content -Path (Join-Path $RunDir 'bts.mode') -Value $(if ($AiOff) { 'ai-off' } else { 'ai-on' }) }
 }
 if ($Only -in @('all', 'demo')) {
     Start-Logged 'demo' (Join-Path $demoRepo 'backend\gradlew.bat') @('bootRun', '--console=plain') (Join-Path $demoRepo 'backend') $demoEnv | Out-Null
