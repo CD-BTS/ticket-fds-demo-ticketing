@@ -54,7 +54,7 @@
 | JDK | 17 |
 | Node.js | 20 이상. 처음 실행할 때 `node_modules`가 없으면 `npm ci`를 자동 실행 |
 | Python | 3.10 이상. 표준 라이브러리만 사용 |
-| PowerShell | Windows PowerShell 5.1 또는 PowerShell 7 |
+| PowerShell | Windows PowerShell 5.1 |
 
 ### 저장소
 
