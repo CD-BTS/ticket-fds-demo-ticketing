@@ -186,8 +186,8 @@ if (Test-Path $livePath) {
     Write-Output "예상 정책과 실제 첫 결정이 다른 대표 계정: $($diff.Count)명 (선정 이후 재평가 등 실제 동작 결과, 수정하지 않음)"
     $ci = @($live.PSObject.Properties.Value | Where-Object { $_.checkin })
     Check '실제 티켓팅: 동적 QR 검표 입장·중복 입장 거부' ($ci.Count -gt 0 -and -not ($ci | Where-Object { $_.checkin.duplicate -ne 'TICKET_ALREADY_CHECKED_IN' })) "$($ci.Count)명"
-    $checkinBts = [int](Invoke-ShowcaseSql bts "SELECT COUNT(*) n FROM behavior_event e JOIN user_account u ON u.user_id=e.user_id WHERE e.event_type='CHECK_IN' AND e.ticket_id IN ($((@($ci | ForEach-Object { "'$($_.checkin.ticket)'" })) -join ','))").n
-    Check '실제 티켓팅: 검표 CHECK_IN이 BTS에 저장' ($checkinBts -eq $ci.Count) "$checkinBts/$($ci.Count)"
+    $checkinBts = if ($ci.Count -gt 0) { [int](Invoke-ShowcaseSql bts "SELECT COUNT(*) n FROM behavior_event e JOIN user_account u ON u.user_id=e.user_id WHERE e.event_type='CHECK_IN' AND e.ticket_id IN ($((@($ci | ForEach-Object { "'$($_.checkin.ticket)'" })) -join ','))").n } else { 0 }
+    Check '실제 티켓팅: 검표 CHECK_IN이 BTS에 저장' ($ci.Count -gt 0 -and $checkinBts -eq $ci.Count) "$checkinBts/$($ci.Count)"
 }
 
 # ---------------------------------------------------------------- 관리자 API (대시보드 화면이 쓰는 경로)
