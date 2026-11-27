@@ -21,7 +21,9 @@ if ($Confirm -ne $project) {
 & (Join-Path $PSScriptRoot 'Stop-Showcase.ps1') -KeepContainers
 $ErrorActionPreference = 'Continue'
 docker compose -p $project -f (Join-Path $PSScriptRoot 'compose.yaml') down -v 2>&1 | Out-Host
+$code = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
+if ($code -ne 0) { throw 'Showcase 컨테이너·볼륨 삭제 실패. 시드 상태와 인증 정보는 유지합니다.' }
 foreach ($p in @('seed-state.json', 'users.json', 'live-state.json', 'plan-cache.pkl', 'plan-summary.json', 'bts.mode')) {
     $f = Join-Path $RunDir $p; if (Test-Path $f) { Remove-Item -Recurse -Force $f }
 }
