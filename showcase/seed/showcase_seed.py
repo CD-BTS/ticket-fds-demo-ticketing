@@ -132,7 +132,7 @@ class Plan:
     def new_ip(self) -> str:
         self._ip_seq += 1
         i = self._ip_seq
-        return f'100.{64 + (i >> 16) % 64}.{(i >> 8) % 256}.{i % 256 or 1}'
+        return f'100.{64 + (i >> 16) % 64}.{(i >> 8) % 256}.{i % 256}'
 
     def new_card(self) -> str:
         self._card_seq += 1
