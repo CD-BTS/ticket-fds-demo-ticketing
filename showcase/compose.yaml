@@ -1,0 +1,97 @@
+# #71 최종 시연용 Showcase 환경. e2e/compose.yaml(일회성 tmpfs)을 바탕으로, 데이터를 named volume에 영구 보존한다.
+# 기존 Dev(fairticket-mysql, demo-ticketing-*)·E2E(cdbts-e2e) 환경과 프로젝트명·컨테이너·포트·볼륨을 공유하지 않는다.
+#   BTS MySQL 3327 · Demo MySQL 3328 · Redis 6391 · AI 8010 (모두 127.0.0.1에만 바인딩)
+# 비밀번호는 루프백 전용 시연 값이다. 실제 환경에 재사용하지 않는다.
+# ADMIN_REPO: ticket-fds-admin 체크아웃 경로, AI_REPO: ticket-fds-ai 체크아웃 경로 (Start-Showcase.ps1이 지정)
+name: cdbts-showcase
+
+services:
+  bts-mysql:
+    image: mysql:8.0
+    container_name: cdbts-showcase-bts-mysql
+    # 버퍼 풀을 디스크에 정리하고 정상 종료할 시간 (기본 10초면 강제 종료될 수 있다)
+    stop_grace_period: 90s
+    ports:
+      - "127.0.0.1:3327:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: showcase-root-only
+      MYSQL_DATABASE: fairticket_db
+      MYSQL_USER: bts_showcase
+      MYSQL_PASSWORD: bts-showcase-only
+      TZ: UTC
+    # e2e와 같은 이유(admin schema.sql의 utf8mb4_unicode_ci FK 호환)로 서버 기본 collation을 맞춘다.
+    # 커밋마다 디스크 동기화(fsync)하지 않는다: Docker Desktop 볼륨에서 이벤트 적재가 커밋 대기로 막히기 때문(약 60건/s).
+    # 정상 종료·재시작에서는 데이터가 모두 남고, OS 비정상 종료 시 마지막 약 1초 분량만 잃을 수 있다(시연 환경 한정).
+    # 버퍼 풀 1G: behavior_event(약 430MB)가 기본값 128MB에 들어가지 않아 관리자 공연 통계가 매번 디스크를 읽는다.
+    command: ["--default-time-zone=+00:00", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-flush-log-at-trx-commit=2", "--sync-binlog=0", "--innodb-buffer-pool-size=1G"]
+    volumes:
+      - bts-mysql-data:/var/lib/mysql
+      # 최신 전체 스키마(admin backend/db/schema.sql). 새 볼륨일 때 한 번만 실행된다. db/manual/*.sql은 기존 DB용이라 쓰지 않는다.
+      - ${ADMIN_REPO:-../../ticket-fds-admin}/backend/db/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD=bts-showcase-only mysql -h127.0.0.1 -ubts_showcase fairticket_db -e "SELECT 1 FROM policy_application LIMIT 1" >/dev/null 2>&1']
+      start_period: 60s
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  demo-mysql:
+    image: mysql:8.0
+    container_name: cdbts-showcase-demo-mysql
+    # 버퍼 풀을 디스크에 정리하고 정상 종료할 시간 (기본 10초면 강제 종료될 수 있다)
+    stop_grace_period: 90s
+    ports:
+      - "127.0.0.1:3328:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: showcase-root-only
+      MYSQL_DATABASE: demo_ticketing_db
+      MYSQL_USER: demo_showcase
+      MYSQL_PASSWORD: demo-showcase-only
+      TZ: UTC
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_as_cs", "--default-time-zone=+00:00", "--innodb-flush-log-at-trx-commit=2", "--sync-binlog=0"]
+    volumes:
+      - demo-mysql-data:/var/lib/mysql
+      # e2e와 같은 초기화 스크립트. 기본 공연(seed.sql의 c1~c3) 대신 Seed-Showcase.ps1이 시연 공연을 넣는다.
+      - ../backend/db/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ../backend/db/02-booking-support.sql:/docker-entrypoint-initdb.d/30-booking-support.sql:ro
+      - ../backend/db/03-seat-concurrency.sql:/docker-entrypoint-initdb.d/40-seat-concurrency.sql:ro
+      - ../backend/db/04-booking-attempts.sql:/docker-entrypoint-initdb.d/50-booking-attempts.sql:ro
+      - ../backend/db/05-ticket-device-binding.sql:/docker-entrypoint-initdb.d/60-ticket-device-binding.sql:ro
+      - ../backend/db/07-checkin-challenges.sql:/docker-entrypoint-initdb.d/70-checkin-challenges.sql:ro
+      - ../backend/db/09-policy-application-outbox.sql:/docker-entrypoint-initdb.d/80-policy-application-outbox.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD=demo-showcase-only mysql -h127.0.0.1 -udemo_showcase demo_ticketing_db -N -e "SELECT 1 FROM information_schema.check_constraints WHERE constraint_schema=DATABASE() AND constraint_name=''ck_outbox_type'' AND check_clause LIKE ''%POLICY_APPLICATION%''" 2>/dev/null | grep -q 1']
+      start_period: 60s
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  demo-redis:
+    image: redis:7.4-alpine
+    container_name: cdbts-showcase-demo-redis
+    ports:
+      - "127.0.0.1:6391:6379"
+    # 대기열·CAPTCHA 상태도 재시작 후 유지되도록 AOF로 볼륨에 저장한다.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - demo-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ticket-fds-ai 저장소의 Dockerfile 그대로 빌드한다(이미지 안에서 최신 v4 모델을 학습). 모델·Feature 정의는 바꾸지 않는다.
+  ai:
+    build:
+      context: ${AI_REPO:-../../ticket-fds-ai}
+    image: cdbts-showcase-ai:local
+    container_name: cdbts-showcase-ai
+    ports:
+      - "127.0.0.1:8010:8000"
+    restart: unless-stopped
+
+volumes:
+  bts-mysql-data:
+  demo-mysql-data:
+  demo-redis-data:
